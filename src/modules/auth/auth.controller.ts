@@ -12,3 +12,11 @@ export const verify = async (req: Request, res: Response) => {
     const data = await verifyOTP (identifier, code);
     res.json(data);
 };
+
+export const sendOtpController = async (req: Request, res: Response) => {
+  const { identifier } = req.body;
+
+  const result = await requestOTP(identifier);
+
+  res.json(result);
+};

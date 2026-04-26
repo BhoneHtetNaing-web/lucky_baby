@@ -2,12 +2,13 @@
 import { pool } from "../../db.js";
 import { generateOTP, sendEmailOTP } from "./otp.service.js";
 import jwt from "jsonwebtoken";
+import { sendSMS } from "../notification/twilio.service.js";
 
-const generateToken = (user: any) => {
-  return jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, {
-    expiresIn: "7d",
-  });
-};
+// const generateToken = (user: any) => {
+//   return jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, {
+//     expiresIn: "7d",
+//   });
+// };
 
 export const requestOTP = async (identifier: string) => {
   const code = generateOTP();
@@ -35,6 +36,8 @@ export const requestOTP = async (identifier: string) => {
         VALUES ($1, $2, NOW() + INTERVAL '5 minutes')`,
     [identifier, code],
   );
+
+  await sendSMS(identifier, `Your OTP is ${code}`);
 
   if (identifier.includes("@")) {
     await sendEmailOTP(identifier, code);
@@ -89,7 +92,12 @@ export const verifyOTP = async (identifier: string, code: string) => {
     );
   }
 
-  const token = generateToken(user.rows[0]);
+  // const token = generateToken(user.rows[0]);
+  const token = jwt.sign(
+    { identifier },
+    process.env.JWT_SECRET!,
+    { expiresIn: "7d" }
+  )
 
   return { user: user.rows[0], token };
 };
