@@ -13,37 +13,43 @@ import { sendSMS } from "../notification/twilio.service.js";
 export const requestOTP = async (identifier: string) => {
   const code = generateOTP();
 
-  // before insert OTP
+  // 🔹 check last OTP (rate limit)
   const lastOTP = await pool.query(
     `SELECT * FROM otps
-        WHERE identifier=$1
-        ORDER BY id DESC LIMIT 1`,
-    [identifier],
+     WHERE identifier=$1
+     ORDER BY id DESC LIMIT 1`,
+    [identifier]
   );
 
   if (lastOTP.rows.length > 0) {
-    const lastTime =
-      new Date(lastOTP.rows[0].expires_at).getTime() - 5 * 60 * 1000;
+    const lastCreated = new Date(lastOTP.rows[0].created_at).getTime();
     const now = Date.now();
 
-    if (now - lastTime < 60000) {
-      throw new Error("Wait before requesting another OTP");
+    if (now - lastCreated < 60000) {
+      throw new Error("Wait 60 seconds before retry");
     }
   }
 
+  // 🔹 insert new OTP
   await pool.query(
-    `INSERT INTO otps (identifier, code, expires_at)
-        VALUES ($1, $2, NOW() + INTERVAL '5 minutes')`,
-    [identifier, code],
+    `INSERT INTO otps (identifier, code, expires_at, created_at)
+     VALUES ($1,$2,NOW() + INTERVAL '5 minutes', NOW())`,
+    [identifier, code]
   );
 
-  await sendSMS(identifier, `Your OTP is ${code}`);
+  console.log("OTP:", code); // 🔥 debug
 
+  // 🔹 send SMS
+  if (identifier.startsWith("+")) {
+    await sendSMS(identifier, `Your OTP is ${code}`);
+  }
+
+  // 🔹 send Email
   if (identifier.includes("@")) {
     await sendEmailOTP(identifier, code);
   }
 
-  return { message: "OPT sent" };
+  return { message: "OTP sent" };
 };
 
 export const verifyOTP = async (identifier: string, code: string) => {
@@ -92,7 +98,6 @@ export const verifyOTP = async (identifier: string, code: string) => {
     );
   }
 
-  // const token = generateToken(user.rows[0]);
   const token = jwt.sign(
     { identifier },
     process.env.JWT_SECRET!,

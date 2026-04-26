@@ -2,9 +2,17 @@ import { Request, Response } from "express";
 import { requestOTP, verifyOTP } from "./auth.service.js";
 
 export const sendOTP = async (req: Request, res: Response) => {
+  try {
     const { identifier } = req.body;
-    const data = await requestOTP(identifier);
-    res.json(data);
+
+    const result = await requestOTP(identifier);
+
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(400).json({
+      message: err.message,
+    });
+  }
 };
 
 export const verify = async (req: Request, res: Response) => {

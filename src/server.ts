@@ -6,8 +6,9 @@ import { initMultiFlightTracking } from "./ws/multiFlightTracking.js";
 import { sendOTP, verify } from "./modules/auth/auth.controller.js";
 import { authMiddleware } from "./middleware/auth.middleware.js";
 import { getSeats } from "./modules/seat/seat.controller.js";
-import { bookSeats, checkIn } from "./modules/booking/booking.controller.js";
-import { createPaymentController, uploadSlip, approveBookingController } from "./modules/payment/payment.controller.js";
+import { bookSeats } from "./modules/booking/booking.controller.js";
+import { checkIn } from "./modules/checkin/checkin.controller.js";
+import { createPaymentController, uploadSlip, approveBookingController, approvePayment } from "./modules/payment/payment.controller.js";
 import { releaseExpiredSeats } from "./modules/seat/seat.cleanup.js";
 import { pool } from "./db.js";
 import { upload } from "./modules/payment/upload.js";
@@ -18,6 +19,7 @@ const server = http.createServer(app);
 app.use(express.json());
 app.use(cors({
   origin: "*",
+  credentials: true,
 }));
 
 // attach websocket
@@ -107,6 +109,7 @@ app.get("/bookings/user/:userId", async (req, res) => {
 });
 app.post("/payment/create", authMiddleware, createPaymentController);
 app.post("/payment/upload-slip", upload.single("file"), uploadSlip);
+app.post("/payment/:id/approve", approvePayment);
 app.post("/admin/approve-booking", approveBookingController);
 app.post("/checkin", checkIn);
 

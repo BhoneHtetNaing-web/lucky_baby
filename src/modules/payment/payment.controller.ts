@@ -5,6 +5,8 @@ import {
   approveBooking,
 } from "./payment.service.js";
 import { pool } from "../../db.js";
+import { generateTicketQR } from "../ticket/ticket.service.js";
+import { sendTicketEmail } from "../notification/email.service.js";
 
 // 👉 create payment (set pending)
 export const createPaymentController = async (req: Request, res: Response) => {
@@ -72,24 +74,56 @@ export const approvePayment = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   // 1. update payment
-  await pool.query(
-    "UPDATE payments SET status='APPROVED' WHERE id=$1",
-    [id]
+  const payment = await pool.query(
+    "UPDATE payments SET status='APPROVED' WHERE id=$1 RETURNING *",
+    [id],
   );
+
+  const bookingId = payment.rows[0].booking_id;
 
   // 2. confirm booking
   await pool.query(
     "UPDATE bookings SET status='CONFIRMED' WHERE id = (SELECT booking_id FROM payments WHERE id=$1)",
-    [id]
+    [bookingId],
   );
 
-  // 3. generate QR
-  const qr = `BOOKING-${id}-${Date.now()}`;
+  const assignSeat = async (bookingId: number) => {
+    const seat = `A-${Math.floor(Math.random() * 30) + 1}`;
+    const gate = `G${Math.floor(Math.random() * 5) + 1}`;
+    const group = Math.ceil(Math.random() * 4);
+
+    await pool.query(
+      `UPDATE bookings 
+     SET status='confirmed',
+         seat_number=$1,
+         gate=$2,
+         boarding_group=$3
+     WHERE id=$4`,
+      [seat, gate, group, bookingId],
+    );
+  };
+
+  // 3. generate ticket + QR
+  const { ticket, qrImage } = await generateTicketQR(bookingId);
 
   await pool.query(
     "UPDATE bookings SET qr_code=$1 WHERE id = (SELECT booking_id FROM payments WHERE id=$2)",
-    [qr, id]
+    [qrImage, ticket],
   );
 
-  res.json({ success: true });
+  // 4. get user email
+  const user = await pool.query(
+    `SELECT u.email FROM users u
+     JOIN bookings b ON u.id = b.user_id
+     WHERE b.id=$1`,
+    [bookingId],
+  );
+
+  // 5. send email
+  await sendTicketEmail(user.rows[0].email, qrImage);
+
+  res.json({
+    message: "Payment approved & ticket generated",
+    ticket,
+  });
 };

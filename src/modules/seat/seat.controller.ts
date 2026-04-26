@@ -14,7 +14,7 @@ export const getSeats = async (req: Request, res: Response) => {
     res.json(result.rows);
 };
 
-export const holdSeatsController = async (req: any, res: any) => {
+export const holdSeatsController = async (req: any, res: Response) => {
     try {
         const { seatIds } = req.body;
         const userId = req.user.userId;
