@@ -1,19 +1,50 @@
-// src/modules/payment/payment.service.ts
-import Stripe from "stripe";
+import fs from "fs";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-06-20" as any,
-});
+interface Booking {
+  id: string;
+  status: "pending" | "confirmed" | "cancelled";
+  paymentSlip?: string;
+}
 
-export const createPaymentIntent = async (
-  amount: number,
-  bookingId: number
+// 👉 temp in-memory DB (later PostgreSQL)
+const bookings: Booking[] = [];
+
+export const createPayment = async (bookingId: string) => {
+  const booking = bookings.find((b) => b.id === bookingId);
+
+  if (!booking) {
+    throw new Error("Booking not found");
+  }
+
+  booking.status = "pending";
+
+  return booking;
+};
+
+export const savePaymentSlip = async (
+  bookingId: string,
+  filePath: string
 ) => {
-  const paymentIntent = await stripe.paymentIntents.create({
-    amount: amount * 100, // cents
-    currency: "usd",
-    metadata: { bookingId },
-  });
+  const booking = bookings.find((b) => b.id === bookingId);
 
-  return paymentIntent;
+  if (!booking) {
+    throw new Error("Booking not found");
+  }
+
+  booking.paymentSlip = filePath;
+  booking.status = "pending";
+
+  return booking;
+};
+
+export const approveBooking = async (bookingId: string) => {
+  const booking = bookings.find((b) => b.id === bookingId);
+
+  if (!booking) {
+    throw new Error("Booking not found");
+  }
+
+  booking.status = "confirmed";
+
+  return booking;
 };

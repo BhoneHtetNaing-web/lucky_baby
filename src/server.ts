@@ -7,19 +7,18 @@ import { sendOTP, verify } from "./modules/auth/auth.controller.js";
 import { authMiddleware } from "./middleware/auth.middleware.js";
 import { getSeats } from "./modules/seat/seat.controller.js";
 import { bookSeats } from "./modules/booking/booking.controller.js";
-import { createPayment } from "./modules/payment/payment.controller.js";
-import { stripeWebhook } from "./modules/payment/webhook.js";
+import { createPaymentController, uploadSlip, approveBookingController } from "./modules/payment/payment.controller.js";
 import { releaseExpiredSeats } from "./modules/seat/seat.cleanup.js";
 import { pool } from "./db.js";
-import Stripe from "stripe";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-06-20" as any,
-});
+import { upload } from "./modules/payment/upload.js";
+import cors from "cors";
 
 const app = express();
 const server = http.createServer(app);
 app.use(express.json());
+app.use(cors({
+  origin: "*",
+}));
 
 // attach websocket
 initFlightTracking(server);
@@ -89,7 +88,7 @@ app.post("/booking", async (req, res) => {
 
   res.json(booking.rows[0]);
 });
-app.post("/bookings", authMiddleware, bookSeats);
+app.post("/bookings/create", authMiddleware, bookSeats);
 app.get("/bookings/user/:userId", async (req, res) => {
   const { userId } = req.params;
 
@@ -106,73 +105,22 @@ app.get("/bookings/user/:userId", async (req, res) => {
 
   res.json(result.rows);
 });
-app.post("/payment/create-intent", async (req, res) => {
-  const { bookingId } = req.body;
+app.post("/payment/create", authMiddleware, createPaymentController);
+app.post("/payment/upload-slip", upload.single("file"), uploadSlip);
+app.post("/admin/approve-booking", approveBookingController);
+app.post("/checkin", (req, res) => {
+  const { qr } = req.body;
 
-  // 1. get booking
-  const booking = await pool.query(`SELECT * FROM bookings WHERE id=$1`, [
-    bookingId,
-  ]);
+  console.log("Check-in:", qr);
 
-  const amount = booking.rows[0].total_price;
-
-  // 2. create stripe payment
-  const paymentIntent = await stripe.paymentIntents.create({
-    amount: amount * 100,
-    currency: "usd",
-    metadata: {
-      bookingId: bookingId.toString(),
-    },
-  });
-
+  // parse booking id
+  const bookingId = qr.replace("booking-", "");
+  
+  // mark checked-in
   res.json({
-    clientSecret: paymentIntent.client_secret,
+    message: "Checked-in",
+    bookingId,
   });
-});
-app.post("/payment", authMiddleware, createPayment);
-app.post("/webhook", express.raw({ type: "application/json" }), stripeWebhook);
-app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  const event = req.body;
-
-  if (event.type === "payment_intent.succeeded") {
-    const paymentIntent = event.data.object;
-
-    const bookingId = paymentIntent.metadata.bookingId;
-    Stripe;
-
-    // 1. CONFIRM BOOKING
-    await pool.query(`UPDATE bookings SET status='CONFIRMED' WHERE id=$1`, [
-      bookingId,
-    ]);
-
-    // 2. BOOK SEATS
-    await pool.query(
-      `
-        UPDATE seats
-        SET status='BOOKED'
-        WHERE id IN (
-          SELECT seat_id FROM booking_seats WHERE booking_id=$1
-        )
-        `,
-      [bookingId],
-    );
-  }
-
-  res.json({ received: true });
-});
-app.post("/checkin", async (req, res) => {
-  const { bookingId } = req.body;
-
-  await pool.query(
-    `
-    UPDATE bookings
-    SET status = 'CHECKED_IN'
-    WHERE id = $1
-    `,
-    [bookingId]
-  );
-
-  res.json({ success: true });
 });
 
 setInterval(() => {

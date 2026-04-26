@@ -1,4 +1,5 @@
 import { pool } from "../../db.js";
+import { generateTicketQR } from "../ticket/ticket.service.js";
 
 export const createBooking = async (
     userId: number,
@@ -67,4 +68,23 @@ export const createBooking = async (
     } finally {
         client.release();
     }
-}
+};
+
+export const confirmBooking = async (bookingId: number) => {
+  // update booking
+  await pool.query(
+    "UPDATE bookings SET status='CONFIRMED' WHERE id=$1",
+    [bookingId]
+  );
+
+  // generate QR
+  const qr = await generateTicketQR(bookingId);
+
+  // save QR
+  await pool.query(
+    "UPDATE bookings SET qr_code=$1 WHERE id=$2",
+    [qr, bookingId]
+  );
+
+  return { success: true };
+};
