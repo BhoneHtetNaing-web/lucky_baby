@@ -1,65 +1,50 @@
-// auth.service.ts
+// src/modules/auth/auth.service.ts
 import { pool } from "../../db.js";
-import { generateOTP, sendEmailOTP } from "./otp.service.js";
-import jwt from "jsonwebtoken";
-import { sendSMS } from "../notification/twilio.service.js";
 
-// const generateToken = (user: any) => {
-//   return jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, {
-//     expiresIn: "7d",
-//   });
-// };
+const generateOTP = () =>
+  Math.floor(100000 + Math.random() * 900000).toString();
 
+// 🔹 SEND OTP
 export const requestOTP = async (identifier: string) => {
   const code = generateOTP();
 
-  // 🔹 check last OTP (rate limit)
-  const lastOTP = await pool.query(
-    `SELECT * FROM otps
-     WHERE identifier=$1
-     ORDER BY id DESC LIMIT 1`,
+  // rate limit (60s)
+  const last = await pool.query(
+    `SELECT * FROM otps WHERE identifier=$1 ORDER BY id DESC LIMIT 1`,
     [identifier]
   );
 
-  if (lastOTP.rows.length > 0) {
-    const lastCreated = new Date(lastOTP.rows[0].created_at).getTime();
-    const now = Date.now();
-
-    if (now - lastCreated < 60000) {
-      throw new Error("Wait 60 seconds before retry");
+  if (last.rows.length > 0) {
+    const lastTime = new Date(last.rows[0].created_at).getTime();
+    if (Date.now() - lastTime < 60000) {
+      throw new Error("Please wait before requesting another OTP");
     }
   }
 
-  // 🔹 insert new OTP
   await pool.query(
-    `INSERT INTO otps (identifier, code, expires_at, created_at)
-     VALUES ($1,$2,NOW() + INTERVAL '5 minutes', NOW())`,
+    `INSERT INTO otps (identifier, code, expires_at)
+     VALUES ($1,$2,NOW() + INTERVAL '5 minutes')`,
     [identifier, code]
   );
 
-  console.log("OTP:", code); // 🔥 debug
+  // 👉 DEV: console log (until SMS ready)
+  console.log("OTP CODE:", code);
 
-  // 🔹 send SMS
-  if (identifier.startsWith("+")) {
-    await sendSMS(identifier, `Your OTP is ${code}`);
-  }
-
-  // 🔹 send Email
-  if (identifier.includes("@")) {
-    await sendEmailOTP(identifier, code);
-  }
+  // 👉 TODO: sendSMS / sendEmail here
 
   return { message: "OTP sent" };
 };
 
+// 🔹 VERIFY OTP
 export const verifyOTP = async (identifier: string, code: string) => {
   const result = await pool.query(
     `SELECT * FROM otps
-        WHERE identifier=$1 AND code=$2 AND is_used=false`,
-    [identifier, code],
+     WHERE identifier=$1 AND code=$2
+     ORDER BY id DESC LIMIT 1`,
+    [identifier, code]
   );
 
-  if (result.rows.length === 0) {
+  if (!result.rows.length) {
     throw new Error("Invalid OTP");
   }
 
@@ -69,40 +54,24 @@ export const verifyOTP = async (identifier: string, code: string) => {
     throw new Error("OTP expired");
   }
 
-  await pool.query(`UPDATE otps SET is_used=true WHERE id=$1`, [otp.id]);
-
-  // verifyOTP
-  if (otp.attempts >= 3) {
-    throw new Error("Too many attempts");
-  }
-
-  // wrong OTP
-  await pool.query(`UPDATE otps SET attempts = attempts + 1 WHERE id=$1`, [
-    otp.id,
-  ]);
-
-  // check user
+  // 👉 create user if not exist
   let user = await pool.query(
-    `SELECT * FROM users WHERE email=$1 OR phone=$1`,
-    [identifier],
+    `SELECT * FROM users WHERE identifier=$1`,
+    [identifier]
   );
 
-  if (user.rows.length === 0) {
+  if (!user.rows.length) {
     user = await pool.query(
-      `INSERT INTO users (email, phone)
-            VALUES ($1, $2) RETURNING *`,
-      [
-        identifier.includes("@") ? identifier : null,
-        !identifier.includes("@") ? identifier : null,
-      ],
+      `INSERT INTO users (identifier) VALUES ($1) RETURNING *`,
+      [identifier]
     );
   }
 
-  const token = jwt.sign(
-    { identifier },
-    process.env.JWT_SECRET!,
-    { expiresIn: "7d" }
-  )
+  // 🔐 simple token (later JWT upgrade)
+  const token = Buffer.from(`${identifier}:${Date.now()}`).toString("base64");
 
-  return { user: user.rows[0], token };
+  return {
+    token,
+    user: user.rows[0],
+  };
 };

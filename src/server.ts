@@ -3,7 +3,7 @@ import express from "express";
 import http from "http";
 import { initFlightTracking } from "./ws/flightTracking.js";
 import { initMultiFlightTracking } from "./ws/multiFlightTracking.js";
-import { sendOTP, verify } from "./modules/auth/auth.controller.js";
+import authRoutes from "./modules/auth/auth.routes.js";
 import { authMiddleware } from "./middleware/auth.middleware.js";
 import { getSeats } from "./modules/seat/seat.controller.js";
 import { bookSeats } from "./modules/booking/booking.controller.js";
@@ -26,16 +26,12 @@ app.use(cors({
 initFlightTracking(server);
 initMultiFlightTracking(server);
 
-server.listen(4000, () => {
-  console.log("Server running on port 4000");
-});
-
 app.get("/me", authMiddleware, (req: any, res) => {
   res.json({ user: req.user });
 });
 
-app.post("/auth/request-otp", sendOTP);
-app.post("/auth/verify-otp", verify);
+// LOGIN + OTP FUNCTION
+app.use("/auth", authRoutes);
 app.get("/flights/:flightId/seats", getSeats);
 app.get("/flights/:id/seats", async (req, res) => {
   const { id } = req.params;
@@ -117,6 +113,6 @@ setInterval(() => {
   releaseExpiredSeats();
 }, 60000);
 
-app.listen(3000, () => {
-  console.log("Server running on http://localhost:3000");
+app.listen(4000, () => {
+  console.log("Server running on http://localhost:4000");
 });

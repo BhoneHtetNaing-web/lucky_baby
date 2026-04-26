@@ -1,30 +1,31 @@
-import { Request, Response } from "express";
+// src/modules/auth/auth.controller.ts
 import { requestOTP, verifyOTP } from "./auth.service.js";
+import { Request, Response } from "express";
 
 export const sendOTP = async (req: Request, res: Response) => {
   try {
     const { identifier } = req.body;
 
+    if (!identifier) {
+      return res.status(400).json({ message: "Identifier required" });
+    }
+
     const result = await requestOTP(identifier);
 
-    return res.json(result);
+    res.json(result);
   } catch (err: any) {
-    return res.status(400).json({
-      message: err.message,
-    });
+    res.status(400).json({ message: err.message });
   }
 };
 
-export const verify = async (req: Request, res: Response) => {
+export const verifyOTPController = async (req: Request, res: Response) => {
+  try {
     const { identifier, code } = req.body;
-    const data = await verifyOTP (identifier, code);
-    res.json(data);
-};
 
-export const sendOtpController = async (req: Request, res: Response) => {
-  const { identifier } = req.body;
+    const result = await verifyOTP(identifier, code);
 
-  const result = await requestOTP(identifier);
-
-  res.json(result);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ message: err.message });
+  }
 };
