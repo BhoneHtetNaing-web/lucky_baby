@@ -6,10 +6,7 @@ import {
 } from "./payment.service.js";
 
 // 👉 create payment (set pending)
-export const createPaymentController = async (
-  req: Request,
-  res: Response
-) => {
+export const createPaymentController = async (req: Request, res: Response) => {
   try {
     const { bookingId } = req.body;
 
@@ -17,7 +14,11 @@ export const createPaymentController = async (
 
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err instanceof Error) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.status(500).json({ error: "Unknown error occurred" });
+    }
   }
 };
 
@@ -31,25 +32,23 @@ export const uploadSlip = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const result = await savePaymentSlip(
-      bookingId,
-      file.path
-    );
+    const result = await savePaymentSlip(bookingId, file.path);
 
     res.json({
       message: "Uploaded",
       data: result,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err instanceof Error) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.status(500).json({ error: "Unknown error occurred" });
+    }
   }
 };
 
 // 👉 admin approve
-export const approveBookingController = async (
-  req: Request,
-  res: Response
-) => {
+export const approveBookingController = async (req: Request, res: Response) => {
   try {
     const { bookingId } = req.body;
 
@@ -60,6 +59,10 @@ export const approveBookingController = async (
       data: result,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err instanceof Error) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.status(500).json({ error: "Unknown error occurred" });
+    }
   }
 };
