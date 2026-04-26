@@ -4,6 +4,7 @@ import {
   savePaymentSlip,
   approveBooking,
 } from "./payment.service.js";
+import { pool } from "../../db.js";
 
 // 👉 create payment (set pending)
 export const createPaymentController = async (req: Request, res: Response) => {
@@ -65,4 +66,30 @@ export const approveBookingController = async (req: Request, res: Response) => {
       res.status(500).json({ error: "Unknown error occurred" });
     }
   }
+};
+
+export const approvePayment = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // 1. update payment
+  await pool.query(
+    "UPDATE payments SET status='APPROVED' WHERE id=$1",
+    [id]
+  );
+
+  // 2. confirm booking
+  await pool.query(
+    "UPDATE bookings SET status='CONFIRMED' WHERE id = (SELECT booking_id FROM payments WHERE id=$1)",
+    [id]
+  );
+
+  // 3. generate QR
+  const qr = `BOOKING-${id}-${Date.now()}`;
+
+  await pool.query(
+    "UPDATE bookings SET qr_code=$1 WHERE id = (SELECT booking_id FROM payments WHERE id=$2)",
+    [qr, id]
+  );
+
+  res.json({ success: true });
 };

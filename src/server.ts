@@ -6,7 +6,7 @@ import { initMultiFlightTracking } from "./ws/multiFlightTracking.js";
 import { sendOTP, verify } from "./modules/auth/auth.controller.js";
 import { authMiddleware } from "./middleware/auth.middleware.js";
 import { getSeats } from "./modules/seat/seat.controller.js";
-import { bookSeats } from "./modules/booking/booking.controller.js";
+import { bookSeats, checkIn } from "./modules/booking/booking.controller.js";
 import { createPaymentController, uploadSlip, approveBookingController } from "./modules/payment/payment.controller.js";
 import { releaseExpiredSeats } from "./modules/seat/seat.cleanup.js";
 import { pool } from "./db.js";
@@ -108,20 +108,7 @@ app.get("/bookings/user/:userId", async (req, res) => {
 app.post("/payment/create", authMiddleware, createPaymentController);
 app.post("/payment/upload-slip", upload.single("file"), uploadSlip);
 app.post("/admin/approve-booking", approveBookingController);
-app.post("/checkin", (req, res) => {
-  const { qr } = req.body;
-
-  console.log("Check-in:", qr);
-
-  // parse booking id
-  const bookingId = qr.replace("booking-", "");
-  
-  // mark checked-in
-  res.json({
-    message: "Checked-in",
-    bookingId,
-  });
-});
+app.post("/checkin", checkIn);
 
 setInterval(() => {
   releaseExpiredSeats();
