@@ -1,6 +1,5 @@
-// src/modules/auth/auth.controller.ts
-import { requestOTP, verifyOTP } from "./auth.service.js";
 import { Request, Response } from "express";
+import { requestOTP, verifyOTP } from "./auth.service.js";
 
 export const sendOTP = async (req: Request, res: Response) => {
   try {
@@ -14,7 +13,7 @@ export const sendOTP = async (req: Request, res: Response) => {
 
     res.json(result);
   } catch (err: any) {
-    res.status(400).json({ message: err.message });
+    res.status(500).json({ message: err.message });
   }
 };
 
@@ -24,7 +23,7 @@ export const verifyOTPController = async (req: Request, res: Response) => {
 
     const result = await verifyOTP(identifier, code);
 
-    res.json(result);
+    res.json(result); // return token
   } catch (err: any) {
     res.status(400).json({ message: err.message });
   }
