@@ -1,4 +1,5 @@
 import { pool } from "../../db.js";
+import { Request, Response } from "express";
 
 export const checkIn = async (req: any, res: any) => {
   const { qr } = req.body;
@@ -32,4 +33,53 @@ export const checkIn = async (req: any, res: any) => {
   );
 
   res.json({ message: "✅ Check-in Successful" });
+};
+
+export const checkInPassenger = async (req: Request, res: Response) => {
+  try {
+    const { code } = req.body; // BOOKING:123
+
+    const bookingId = code.replace("BOOKING:", "");
+
+    const result = await pool.query(
+      `SELECT * FROM bookings WHERE id=$1`,
+      [bookingId]
+    );
+
+    const booking = result.rows[0];
+
+    if (!booking) {
+      return res.json({ status: "INVALID", message: "Booking not found" });
+    }
+
+    if (booking.status !== "CONFIRMED") {
+      return res.json({
+        status: "INVALID",
+        message: "Not approved yet",
+      });
+    }
+
+    if (booking.boarded) {
+      return res.json({
+        status: "INVALID",
+        message: "Already boarded",
+      });
+    }
+
+    // ✅ VALID → mark boarded
+    await pool.query(
+      `UPDATE bookings
+       SET boarded=true, boarded_at=NOW()
+       WHERE id=$1`,
+      [bookingId]
+    );
+
+    return res.json({
+      status: "VALID",
+      message: "Boarding successful",
+      booking,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err });
+  }
 };

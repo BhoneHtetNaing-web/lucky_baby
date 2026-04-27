@@ -1,167 +1,75 @@
-// src/server.ts
 import express from "express";
-import http from "http";
-import { initFlightTracking } from "./ws/flightTracking.js";
-import { initMultiFlightTracking } from "./ws/multiFlightTracking.js";
-import { authMiddleware } from "./middleware/auth.middleware.js";
-import { getSeats } from "./modules/seat/seat.controller.js";
-import { bookSeats } from "./modules/booking/booking.controller.js";
-import { checkIn } from "./modules/checkin/checkin.controller.js";
-import { createPaymentController, uploadSlip, approveBookingController, approvePayment } from "./modules/payment/payment.controller.js";
-import { releaseExpiredSeats } from "./modules/seat/seat.cleanup.js";
-import { pool } from "./db.js";
-import { upload } from "./modules/payment/upload.js";
 import cors from "cors";
+import dotenv from "dotenv";
+import path from "path";
+
+// ROUTES
 import authRoutes from "./modules/auth/auth.routes.js";
-import bodyParser from "body-parser";
-import twilio from "twilio";
+import paymentRoutes from "./modules/payment/payment.routes.js";
+import adminRoutes from "./modules/admin/admin.routes.js";
+import ticketRoutes from "./modules/ticket/ticket.routes.js";
+import checkinRoutes from "./modules/checkin/checkin.routes.js";
+import bookingRoutes from "./modules/booking/booking.routes.js";
+import seatRoutes from "./modules/seat/seat.routes.js";
+
+dotenv.config();
 
 const app = express();
 
-// middleware
-app.use(express.json());
+/* =========================
+   MIDDLEWARE
+========================= */
 app.use(cors({
-  origin: "*",
-  credentials: true,
+  origin: "*", // 👉 production မှာ app domain only ထည့်
 }));
-const server = http.createServer(app);
 
-// attach websocket
-initFlightTracking(server);
-initMultiFlightTracking(server);
-
-app.get("/me", authMiddleware, (req: any, res) => {
-  res.json({ user: req.user });
-});
-
-
-const ACCOUNT_SID = process.env.TWILIO_SID;
-
-const authToken = process.env.TWILIO_AUTH;
-
-const client = twilio(ACCOUNT_SID, authToken);
-const otpStore = {} as any;
-
+app.use(express.json());
 app.use("/auth", authRoutes);
-// LOGIN + OTP FUNCTION
-// app.post("/auth/send-otp", (req, res) => {
-//   const { phone } = req.body;
-//   const otp = Math.floor(100000 + Math.random() * 900000); // generate
+app.use(express.urlencoded({ extended: true }));
 
-//   client.messages
-//    .create({
-//     body: `Your OTP is ${otp}`,
-//     from: process.env.TWILIO_NUMBER,
-//     to: phone
-//    })
-//    .then(() => {
-//     otpStore[phone] = otp;
-//     res.status(200).send({ success: true, otp }) // send otp back for
-//    })
-//    .catch(err => {
-//       res.status(500).send({ success: false, message: err.message });
-//    });
-// });
+/* =========================
+   STATIC FILE (UPLOADS)
+========================= */
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
-// app.post("/auth/verify-otp", (req, res) => {
-//   const { phone, otp } = req.body;
+/* =========================
+   ROUTES
+========================= */
 
-//   if (!phone || !otp) {
-//     return res
-//       .status(400)
-//       .json({ message: "Phone number and otp are required" });
-//   }
-
-//   const storedOtp = otpStore[phone];
-
-//   if (parseInt(otp) === storedOtp) {
-//     delete otpStore[phone];
-//     return res.json({ verified: true });
-//   } else {
-//     return res.json({ verified: false });
-//   }
-// });
-app.get("/flights/:flightId/seats", getSeats);
-app.get("/flights/:id/seats", async (req, res) => {
-  const { id } = req.params;
-
-  const result = await pool.query(
-    `SELECT * FROM seats WHERE flight_id=$1 ORDER BY id`,
-    [id],
-  );
-
-  res.json(result.rows);
+// Health check
+app.get("/", (req, res) => {
+  res.send("🚀 Lucky Treasure API Running");
 });
-// HOLD seats (5 min lock)
-app.post("/seats/hold", async (req, res) => {
-  const { seatIds } = req.body;
 
-  await pool.query(
-    `
-    UPDATE seats
-    SET status='HELD',
-        hold_expires_at = NOW() + INTERVAL '5 minutes'
-    WHERE id = ANY($1)
-    `,
-    [seatIds],
-  );
+// BOOKING + SEAT
+app.use("/booking", bookingRoutes);
+app.use("/seat", seatRoutes);
+// Payment (user upload slip)
+app.use("/payment", paymentRoutes);
 
-  res.json({ success: true });
+// Admin approve
+app.use("/admin", adminRoutes);
+
+// Ticket
+app.use("/ticket", ticketRoutes);
+
+// checkin
+app.use("/checkin", checkinRoutes);
+/* =========================
+   ERROR HANDLER
+========================= */
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error("❌ ERROR:", err);
+  res.status(500).json({
+    message: "Internal Server Error",
+  });
 });
-// CREATE booking
-app.post("/booking", async (req, res) => {
-  const { userId, flightId, seatIds, totalPrice } = req.body;
 
-  const booking = await pool.query(
-    `
-    INSERT INTO bookings (user_id, flight_id, total_price, status)
-    VALUES ($1,$2,$3,'PENDING')
-    RETURNING *
-    `,
-    [userId, flightId, totalPrice],
-  );
+/* =========================
+   SERVER START
+========================= */
+const PORT = process.env.PORT || 5000;
 
-  const bookingId = booking.rows[0].id;
-
-  for (let seatId of seatIds) {
-    await pool.query(
-      `
-      INSERT INTO booking_seats (booking_id, seat_id)
-      VALUES ($1,$2)
-      `,
-      [bookingId, seatId],
-    );
-  }
-
-  res.json(booking.rows[0]);
-});
-app.post("/bookings/create", authMiddleware, bookSeats);
-app.get("/bookings/user/:userId", async (req, res) => {
-  const { userId } = req.params;
-
-  const result = await pool.query(
-    `
-    SELECT b.*, f.from_city, f.to_city, f.departure_time
-    FROM bookings b
-    JOIN flights f ON f.id = b.flight_id
-    WHERE b.user_id = $1
-    ORDER BY b.created_at DESC
-    `,
-    [userId],
-  );
-
-  res.json(result.rows);
-});
-app.post("/payment/create", authMiddleware, createPaymentController);
-app.post("/payment/upload-slip", upload.single("file"), uploadSlip);
-app.post("/payment/:id/approve", approvePayment);
-app.post("/admin/approve-booking", approveBookingController);
-app.post("/checkin", checkIn);
-
-setInterval(() => {
-  releaseExpiredSeats();
-}, 60000);
-
-app.listen(5000, () => {
-  console.log("Server running on http://localhost:5000");
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });

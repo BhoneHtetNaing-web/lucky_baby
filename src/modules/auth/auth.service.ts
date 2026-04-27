@@ -1,30 +1,37 @@
 import { pool } from "../../db.js";
+import nodemailer from "nodemailer";
 import jwt from "jsonwebtoken";
-import { sendSMS } from "../../services/twilio.js";
+
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
-// 👉 SEND OTP
 export const requestOTP = async (identifier: string) => {
   const code = generateOTP();
 
   await pool.query(
     `INSERT INTO otps (identifier, code, expires_at)
-     VALUES ($1, $2, NOW() + INTERVAL '5 minutes')`,
+     VALUES ($1,$2,NOW()+INTERVAL '5 minutes')`,
     [identifier, code]
   );
 
-  if (!identifier.startsWith("+")) {
-    throw new Error("Phone must include country code (+959...)");
-  }
+  await transporter.sendMail({
+    from: `"Lucky Treasure" <${process.env.EMAIL_USER}>`,
+    to: identifier,
+    subject: "Your OTP Code",
+    html: `<h2>Your OTP is: ${code}</h2>`,
+  });
 
-  await sendSMS(identifier, `Your OTP is ${code}`);
-
-  return { message: "OTP sent via SMS" };
+  return { message: "OTP sent" };
 };
 
-// 👉 VERIFY OTP
 export const verifyOTP = async (identifier: string, code: string) => {
   const result = await pool.query(
     `SELECT * FROM otps
@@ -33,39 +40,17 @@ export const verifyOTP = async (identifier: string, code: string) => {
     [identifier, code]
   );
 
-  if (result.rows.length === 0) {
-    throw new Error("Invalid OTP");
-  }
+  if (!result.rows.length) throw new Error("Invalid OTP");
 
   const otp = result.rows[0];
 
-  if (new Date() > otp.expires_at) {
+  if (new Date(otp.expires_at) < new Date()) {
     throw new Error("OTP expired");
   }
 
-  // 🔥 create user (optional)
-  const userRes = await pool.query(
-    `INSERT INTO users (identifier)
-     VALUES ($1)
-     ON CONFLICT (identifier) DO NOTHING
-     RETURNING *`,
-    [identifier]
-  );
-
-  const user =
-    userRes.rows[0] ||
-    (
-      await pool.query(`SELECT * FROM users WHERE identifier=$1`, [
-        identifier,
-      ])
-    ).rows[0];
-
-  // 🔐 JWT TOKEN
-  const token = jwt.sign(
-    { userId: user.id },
-    process.env.JWT_SECRET || "secret",
-    { expiresIn: "7d" }
-  );
+  const token = jwt.sign({ identifier }, process.env.JWT_SECRET!, {
+    expiresIn: "7d",
+  });
 
   return { token };
 };

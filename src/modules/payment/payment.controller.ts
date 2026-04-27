@@ -7,6 +7,7 @@ import {
 import { pool } from "../../db.js";
 import { generateTicketQR } from "../ticket/ticket.service.js";
 import { sendTicketEmail } from "../notification/email.service.js";
+import { createPaymentRequest } from "./payment.service.js";
 
 // 👉 create payment (set pending)
 export const createPaymentController = async (req: Request, res: Response) => {
@@ -28,25 +29,24 @@ export const createPaymentController = async (req: Request, res: Response) => {
 // 👉 upload screenshot
 export const uploadSlip = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.body;
-    const file = req.file;
+    const { flightId, seats } = req.body;
+    const userId = (req as any).user.id;
 
-    if (!file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
+    const slipUrl = (req as any).file?.path; // multer upload
 
-    const result = await savePaymentSlip(bookingId, file.path);
+    const booking = await createPaymentRequest(
+      userId,
+      flightId,
+      JSON.parse(seats),
+      slipUrl
+    );
 
     res.json({
-      message: "Uploaded",
-      data: result,
+      message: "Payment submitted, waiting admin approval",
+      booking,
     });
   } catch (err) {
-    if (err instanceof Error) {
-      res.status(500).json({ error: err.message });
-    } else {
-      res.status(500).json({ error: "Unknown error occurred" });
-    }
+    res.status(500).json({ message: "error", err });
   }
 };
 

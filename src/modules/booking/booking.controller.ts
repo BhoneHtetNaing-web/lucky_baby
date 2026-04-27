@@ -1,18 +1,40 @@
 // booking.controller.ts
 import { Request, Response } from "express";
-import { createBooking } from "./booking.service.js";
+// import { createBooking } from "./booking.service.js";
 import { pool } from "../../db.js";
 
-export const bookSeats = async (req: any, res: Response) => {
+// export const bookSeats = async (req: any, res: Response) => {
+//   try {
+//     const { flightId, seatIds } = req.body;
+//     const userId = req.user.userId;
+
+//     const booking = await createBooking(userId, flightId, seatIds);
+
+//     res.json(booking);
+//   } catch (err: any) {
+//     res.status(400).json({ message: err.message });
+//   }
+// };
+
+export const createBooking = async (req: Request, res: Response) => {
   try {
-    const { flightId, seatIds } = req.body;
-    const userId = req.user.userId;
+    const { flightId, seats } = req.body;
 
-    const booking = await createBooking(userId, flightId, seatIds);
+    const result = await pool.query(
+      `INSERT INTO bookings (flight_id, seats, status)
+       VALUES ($1, $2, 'PENDING')
+       RETURNING *`,
+      [flightId, seats]
+    );
 
-    res.json(booking);
-  } catch (err: any) {
-    res.status(400).json({ message: err.message });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err });
   }
+};
+
+export const getBookings = async (req: Request, res: Response) => {
+  const result = await pool.query(`SELECT * FROM bookings`);
+  res.json(result.rows);
 };
 
