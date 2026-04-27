@@ -12,16 +12,19 @@ import { releaseExpiredSeats } from "./modules/seat/seat.cleanup.js";
 import { pool } from "./db.js";
 import { upload } from "./modules/payment/upload.js";
 import cors from "cors";
+import authRoutes from "./modules/auth/auth.routes.js";
 import bodyParser from "body-parser";
 import twilio from "twilio";
 
 const app = express();
-const server = http.createServer(app);
-app.use(bodyParser.json());
+
+// middleware
+app.use(express.json());
 app.use(cors({
   origin: "*",
   credentials: true,
 }));
+const server = http.createServer(app);
 
 // attach websocket
 initFlightTracking(server);
@@ -39,44 +42,45 @@ const authToken = process.env.TWILIO_AUTH;
 const client = twilio(ACCOUNT_SID, authToken);
 const otpStore = {} as any;
 
+app.use("/auth", authRoutes);
 // LOGIN + OTP FUNCTION
-app.post("/auth/send-otp", (req, res) => {
-  const { phone } = req.body;
-  const otp = Math.floor(100000 + Math.random() * 900000); // generate
+// app.post("/auth/send-otp", (req, res) => {
+//   const { phone } = req.body;
+//   const otp = Math.floor(100000 + Math.random() * 900000); // generate
 
-  client.messages
-   .create({
-    body: `Your OTP is ${otp}`,
-    from: process.env.TWILIO_NUMBER,
-    to: phone
-   })
-   .then(() => {
-    otpStore[phone] = otp;
-    res.status(200).send({ success: true, otp }) // send otp back for
-   })
-   .catch(err => {
-      res.status(500).send({ success: false, message: err.message });
-   });
-});
+//   client.messages
+//    .create({
+//     body: `Your OTP is ${otp}`,
+//     from: process.env.TWILIO_NUMBER,
+//     to: phone
+//    })
+//    .then(() => {
+//     otpStore[phone] = otp;
+//     res.status(200).send({ success: true, otp }) // send otp back for
+//    })
+//    .catch(err => {
+//       res.status(500).send({ success: false, message: err.message });
+//    });
+// });
 
-app.post("/auth/verify-otp", (req, res) => {
-  const { phone, otp } = req.body;
+// app.post("/auth/verify-otp", (req, res) => {
+//   const { phone, otp } = req.body;
 
-  if (!phone || !otp) {
-    return res
-      .status(400)
-      .json({ message: "Phone number and otp are required" });
-  }
+//   if (!phone || !otp) {
+//     return res
+//       .status(400)
+//       .json({ message: "Phone number and otp are required" });
+//   }
 
-  const storedOtp = otpStore[phone];
+//   const storedOtp = otpStore[phone];
 
-  if (parseInt(otp) === storedOtp) {
-    delete otpStore[phone];
-    return res.json({ verified: true });
-  } else {
-    return res.json({ verified: false });
-  }
-});
+//   if (parseInt(otp) === storedOtp) {
+//     delete otpStore[phone];
+//     return res.json({ verified: true });
+//   } else {
+//     return res.json({ verified: false });
+//   }
+// });
 app.get("/flights/:flightId/seats", getSeats);
 app.get("/flights/:id/seats", async (req, res) => {
   const { id } = req.params;
