@@ -17,17 +17,20 @@ import seatRoutes from "./modules/seat/seat.routes.js";
 import { getAutoReply, aiChat } from "./modules/chat/chat.controller.js";
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
 /* =========================
    MIDDLEWARE
 ========================= */
 app.use(cors({
-  origin: "*", // 👉 production မှာ app domain only ထည့်
+  origin: "*",
+  credentials: true,
 }));
 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
+/* =======================
+ AUTHENTICATION LOGIN/OTP
+======================== */
 app.use("/auth", authRoutes);
 
 /* ======================
@@ -163,6 +166,31 @@ app.get("/", (req, res) => {
 
 // BOOKING + SEAT
 app.use("/booking", bookingRoutes);
+app.post("/boarding/verify", async (req, res) => {
+  const { qr } = req.body;
+
+  const [bookingId] = qr.split("|")[0].split(":");
+
+  const result = await pool.query(
+    "SELECT * FROM bookings WHERE id=$1",
+    [bookingId]
+  );
+
+  if (result.rows.length === 0) {
+    return res.json({ valid: false });
+  }
+
+  const booking = result.rows[0];
+
+  if (booking.status !== "CONFIRMED") {
+    return res.json({ valid: false });
+  }
+
+  return res.json({
+    valid: true,
+    seat: booking.seat,
+  });
+});
 app.use("/seat", seatRoutes);
 // Payment (user upload slip)
 app.use("/payment", paymentRoutes);
