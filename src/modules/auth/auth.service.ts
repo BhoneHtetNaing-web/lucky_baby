@@ -23,27 +23,34 @@ export const requestOTP = async (identifier: string) => {
 
 export const verifyOTP = async (identifier: string, code: string) => {
   const result = await pool.query(
-    `SELECT * FROM otps 
-     WHERE identifier=$1 AND code=$2 
-     ORDER BY id DESC LIMIT 1`,
-    [identifier, code]
+    `SELECT * FROM otps
+     WHERE identifier=$1
+     ORDER BY id DESC
+     LIMIT 1`,
+    [identifier]
   );
 
   if (result.rows.length === 0) {
-    throw new Error("Invalid OTP");
+    throw new Error("No OTP found");
   }
 
   const otp = result.rows[0];
 
-  if (new Date(otp.expires_at) < new Date()) {
+  console.log("DB:", otp.code);
+  console.log("USER:", code);
+
+  // ✅ check code
+  if (String(otp.code) !== String(code)) {
+    throw new Error("Invalid OTP");
+  }
+
+  // ✅ check expire
+  if (new Date() > new Date(otp.expires_at)) {
     throw new Error("OTP expired");
   }
 
-  const token = jwt.sign(
-    { identifier },
-    process.env.JWT_SECRET!,
-    { expiresIn: "7d" }
-  );
-
-  return { token };
+  return {
+    success: true,
+    message: "OTP verified",
+   };
 };
