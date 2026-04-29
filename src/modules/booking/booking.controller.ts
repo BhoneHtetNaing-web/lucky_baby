@@ -38,3 +38,25 @@ export const getBookings = async (req: Request, res: Response) => {
   res.json(result.rows);
 };
 
+// booking.controller.ts
+
+export const lockSeat = async (req: Request, res: Response) => {
+  const { seatId } = req.body;
+
+  const seat = await pool.query(
+    "SELECT * FROM seats WHERE id=$1 FOR UPDATE",
+    [seatId]
+  );
+
+  if (seat.rows[0].status !== "available") {
+    return res.status(400).json({ error: "Seat not available" });
+  }
+
+  await pool.query(
+    "UPDATE seats SET status='locked' WHERE id=$1",
+    [seatId]
+  );
+
+  res.json({ success: true });
+};
+
