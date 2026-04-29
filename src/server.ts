@@ -6,7 +6,22 @@ import { pool } from "./db.js";
 
 dotenv.config();
 
-// ROUTES
+const app = express();
+
+/* =========================
+   MIDDLEWARE
+========================= */
+app.use(cors({
+  origin: "*", // ⚠️ dev only
+  credentials: true,
+}));
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+/* =========================
+   ROUTES IMPORT
+========================= */
 import authRoutes from "./modules/auth/auth.routes.js";
 import paymentRoutes from "./modules/payment/payment.routes.js";
 import adminRoutes from "./modules/admin/admin.routes.js";
@@ -15,28 +30,102 @@ import checkinRoutes from "./modules/checkin/checkin.routes.js";
 import bookingRoutes from "./modules/booking/booking.routes.js";
 import seatRoutes from "./modules/seat/seat.routes.js";
 import { getAutoReply, aiChat } from "./modules/chat/chat.controller.js";
+import { authMiddleware } from "./middleware/auth.middleware.js";
 
-const app = express();
 /* =========================
-   MIDDLEWARE
+   BASE ROUTES
 ========================= */
-app.use(cors({
-  origin: "*",
-  credentials: true,
-}));
+app.get("/", (req, res) => {
+  res.send("🚀 Lucky Treasure API Running");
+});
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-/* =======================
- AUTHENTICATION LOGIN/OTP
-======================== */
+/* =========================
+   AUTH
+========================= */
 app.use("/auth", authRoutes);
 
-/* ======================
-  CHAT-BOT
-======================= */
+app.get("/me", authMiddleware, async (req: any, res) => {
+  res.json({
+    message: "Authorized user",
+    user: req.user,
+  });
+});
+
+/* =========================
+   MAIN MODULES
+========================= */
+app.use("/booking", bookingRoutes);
+app.use("/seat", seatRoutes);
+app.post("/seat/lock", async (req, res) => {
+  const { seatId, userId } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE seats
+       SET status='locked',
+           locked_by=$1,
+           locked_at=NOW()
+       WHERE id=$2
+       AND (status='available'
+            OR (status='locked' AND locked_at < NOW() - INTERVAL '2 minutes'))
+       RETURNING *`,
+      [userId, seatId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.json({ success: false, message: "Seat already taken" });
+    }
+
+    res.json({ success: true, seat: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: "Lock failed" });
+  }
+});
+app.post("/seat/unlock", async (req, res) => {
+  const { seatId, userId } = req.body;
+
+  await pool.query(
+    `UPDATE seats
+     SET status='available',
+         locked_by=NULL,
+         locked_at=NULL
+     WHERE id=$1 AND locked_by=$2`,
+    [seatId, userId]
+  );
+
+  res.json({ success: true });
+});
+app.post("/seat/book", async (req, res) => {
+  const { seatId, userId } = req.body;
+
+  const result = await pool.query(
+    `UPDATE seats
+     SET status='booked'
+     WHERE id=$1 AND locked_by=$2
+     RETURNING *`,
+    [seatId, userId]
+  );
+
+  if (result.rowCount === 0) {
+    return res.json({ success: false });
+  }
+
+  res.json({ success: true });
+});
+app.use("/payment", paymentRoutes);
+app.use("/ticket", ticketRoutes);
+app.use("/checkin", checkinRoutes);
+
+/* =========================
+   ADMIN (IMPORTANT)
+========================= */
+app.use("/admin", adminRoutes);
+
+/* =========================
+   CHATBOT
+========================= */
 app.post("/ai-chat", aiChat);
+
 app.post("/chat", async (req, res) => {
   const { message } = req.body;
 
@@ -44,19 +133,13 @@ app.post("/chat", async (req, res) => {
 
   await pool.query(
     `INSERT INTO messages (message, reply, status, role)
-     VALUES ($1, $2, 'user', 'auto') RETURNING *`,
-    [message]
+     VALUES ($1, $2, 'user', 'auto')`,
+    [message, autoReply]
   );
 
-  res.json({
-    message,
-    reply: autoReply,
-  });
+  res.json({ message, reply: autoReply });
 });
 
-/* =========================
-  ADMIN / REPLY
-========================== */
 app.post("/admin/reply", async (req, res) => {
   const { id, reply } = req.body;
 
@@ -71,22 +154,31 @@ app.post("/admin/reply", async (req, res) => {
 });
 
 /* =========================
-  FLIGHTS
-========================== */
+   FLIGHTS
+========================= */
+app.get("/airlines", async (req, res) => {
+  const result = await pool.query("SELECT * FROM airlines");
+  res.json(result.rows);
+});
+app.get("/flights/:airlineId", async (req, res) => {
+  const { airlineId } = req.params;
+
+  const result = await pool.query(
+    "SELECT * FROM flights WHERE airline_id=$1",
+    [airlineId]
+  );
+
+  res.json(result.rows);
+});
 app.get("/flights", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM flights");
-
     res.json(result.rows);
-  } catch (err) {
-    console.error(err);
+  } catch {
     res.status(500).json({ error: "Failed to fetch flights" });
   }
 });
 
-/* ========================
-  POST FLIGHTS (ADMIN USE)
-========================= */
 app.post("/flights", async (req, res) => {
   const { from, to, price, departure_time } = req.body;
 
@@ -99,13 +191,13 @@ app.post("/flights", async (req, res) => {
     );
 
     res.json(result.rows[0]);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Create flight failed" });
   }
 });
 
 /* =========================
-  VISA API
+   VISA
 ========================= */
 app.post("/visa", async (req, res) => {
   const { name, passport, country, travelDate } = req.body;
@@ -120,23 +212,21 @@ app.post("/visa", async (req, res) => {
 });
 
 /* =========================
-  HISTORY API
+   HISTORY
 ========================= */
 app.get("/history", async (req, res) => {
   const flights = await pool.query(`
     SELECT id, 'flight' as type,
     'Flight Booking' as title,
-    status,
-    created_at
+    status, created_at
     FROM bookings
-    WHERE status = 'confirmed'
+    WHERE status = 'CONFIRMED'
   `);
 
   const visas = await pool.query(`
     SELECT id, 'visa' as type,
     country as title,
-    status,
-    created_at
+    status, created_at
     FROM visa_requests
     WHERE status = 'approved'
   `);
@@ -144,69 +234,56 @@ app.get("/history", async (req, res) => {
   const combined = [...flights.rows, ...visas.rows];
 
   combined.sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    (a, b) =>
+      new Date(b.created_at).getTime() -
+      new Date(a.created_at).getTime()
   );
 
   res.json(combined);
 });
 
 /* =========================
-   STATIC FILE (UPLOADS)
+   BOARDING QR VERIFY
+========================= */
+app.post("/boarding/verify", async (req, res) => {
+  const { qr } = req.body;
+
+  try {
+    const bookingId = qr.split("|")[0].split(":")[1];
+
+    const result = await pool.query(
+      "SELECT * FROM bookings WHERE id=$1",
+      [bookingId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ valid: false });
+    }
+
+    const booking = result.rows[0];
+
+    if (booking.status !== "CONFIRMED") {
+      return res.json({ valid: false });
+    }
+
+    return res.json({
+      valid: true,
+      seat: booking.seat,
+    });
+  } catch {
+    res.json({ valid: false });
+  }
+});
+
+/* =========================
+   STATIC FILES
 ========================= */
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 /* =========================
-   ROUTES
+   ERROR HANDLER (LAST)
 ========================= */
-
-// Health check
-app.get("/", (req, res) => {
-  res.send("🚀 Lucky Treasure API Running");
-});
-
-// BOOKING + SEAT
-app.use("/booking", bookingRoutes);
-app.post("/boarding/verify", async (req, res) => {
-  const { qr } = req.body;
-
-  const [bookingId] = qr.split("|")[0].split(":");
-
-  const result = await pool.query(
-    "SELECT * FROM bookings WHERE id=$1",
-    [bookingId]
-  );
-
-  if (result.rows.length === 0) {
-    return res.json({ valid: false });
-  }
-
-  const booking = result.rows[0];
-
-  if (booking.status !== "CONFIRMED") {
-    return res.json({ valid: false });
-  }
-
-  return res.json({
-    valid: true,
-    seat: booking.seat,
-  });
-});
-app.use("/seat", seatRoutes);
-// Payment (user upload slip)
-app.use("/payment", paymentRoutes);
-
-// Admin approve
-app.use("/admin", adminRoutes);
-
-// Ticket
-app.use("/ticket", ticketRoutes);
-
-// checkin
-app.use("/checkin", checkinRoutes);
-/* =========================
-   ERROR HANDLER
-========================= */
-app.use((err: any, req: any, res: any, next: any) => {
+app.use((err:any, req: any, res: any, next: any) => {
   console.error("❌ ERROR:", err);
   res.status(500).json({
     message: "Internal Server Error",
