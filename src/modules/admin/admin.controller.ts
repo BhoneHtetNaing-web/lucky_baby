@@ -1,15 +1,29 @@
 import { Request, Response } from "express";
 import { pool } from "../../db.js";
 import { generateQRCode } from "../../utils/qrcode.js";
+import { io, userSockets } from "../../server.js";
 
 // ✅ APPROVE PAYMENT
 export const approvePayment = async (req: Request, res: Response) => {
-  const { paymentId } = req.body;
+  const { paymentId, userId, bookingId } = req.body;
 
   await pool.query(
     `UPDATE payments SET status='APPROVED' WHERE id=$1`,
     [paymentId]
   );
+    // confirm booking + generate ticket
+  const ticketCode = `TKT-${Date.now()}`;
+
+  await pool.query(
+    "UPDATE bookings SET status='CONFIRMED', ticket_code=$1 WHERE id=$2",
+    [ticketCode, bookingId]
+  );
+
+  const socketId = userSockets.get(userId);
+
+  if (socketId) {
+    io.to(socketId).emit("payment-approved", { paymentId, ticketCode });
+  }
 
   res.json({ success: true });
 };
