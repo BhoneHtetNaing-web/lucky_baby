@@ -37,13 +37,12 @@ router.post(
   async (req, res) => {
     const { title, description, price, duration } = req.body;
 
-    const image = req.file ? req.file.path : null;
-
+    const image = req.file;
     if (!image) {
         return res.status(400).json({ error: "Image is required" });
     }
 
-    const upload = await uploadToCloudinary(image);
+    const upload = await uploadToCloudinary(image.path);
 
     const result = await pool.query(
       `INSERT INTO tours (title, description, price, duration, image)

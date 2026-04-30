@@ -1,13 +1,14 @@
-import cloudinary from "cloudinary";
+import { v2 as cloudinary } from "cloudinary";
 import multer from "multer";
+import fs from "fs";
 
-cloudinary.v2.config({
+cloudinary.config({
   cloud_name: process.env.CLOUD_NAME!,
   api_key: process.env.CLOUD_API_KEY!,
   api_secret: process.env.CLOUD_API_SECRET!,
 });
 
-// multer storage
+// 📁 local storage first
 export const storage = multer.diskStorage({
   destination: "uploads/",
   filename: (req, file, cb) => {
@@ -15,10 +16,15 @@ export const storage = multer.diskStorage({
   },
 });
 
-export const uploadImage = multer({ storage });
+export const upload = multer({ storage });
 
+// ☁️ upload to cloudinary
 export const uploadToCloudinary = async (filePath: string) => {
-  return await cloudinary.v2.uploader.upload(filePath, {
+  const result = await cloudinary.uploader.upload(filePath, {
     folder: "tours",
-  } as any);
+  });
+
+  fs.unlinkSync(filePath); // delete local file after upload
+
+  return result;
 };
