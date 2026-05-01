@@ -96,18 +96,23 @@ app.post("/admin/cancel-booking", requireAdmin, async (req, res) => {
 
 // 💳 approve payment + notify user
 app.post("/admin/approve-payment", requireAdmin, async (req, res) => {
-  const { paymentId, userId } = req.body;
+  const { paymentId, bookingId, userId } = req.body;
 
   await pool.query(
     "UPDATE payments SET status='APPROVED' WHERE id=$1",
     [paymentId]
   );
 
+  await pool.query(
+    "UPDATE bookings SET status='CONFIRMED' WHERE id=(SELECT booking_id FROM payments WHERE id=$1)",
+    [bookingId]
+  )
+
   const socketId = userSockets.get(userId);
 
   if (socketId) {
     io.to(socketId).emit("payment-approved", {
-      message: "Payment Approved ✅",
+      bookingId,
     });
   }
 
@@ -132,7 +137,6 @@ app.post("/admin/generate-ticket", requireAdmin, async (req, res) => {
    HISTORY (USER + TOUR + FLIGHT)
 ========================= */
 app.get("/history", async (req, res) => {
-  try {
     const flights = await pool.query(`
       SELECT id, 'flight' as type,
       'Flight Booking' as title,
@@ -146,7 +150,7 @@ app.get("/history", async (req, res) => {
       name as title,
       status,
       created_at
-      FROM tours
+      FROM tours_bookings
     `);
 
     const combined = [...flights.rows, ...tours.rows];
@@ -158,10 +162,8 @@ app.get("/history", async (req, res) => {
     );
 
     res.json(combined);
-  } catch (err) {
-    res.status(500).json({ error: "History failed" });
   }
-});
+);
 
 /* =========================
    ADMIN ANALYTICS

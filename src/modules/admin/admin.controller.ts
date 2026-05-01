@@ -19,10 +19,11 @@ export const approvePayment = async (req: Request, res: Response) => {
     [ticketCode, bookingId]
   );
 
+  // notify user in real-time
   const socketId = userSockets.get(userId);
 
   if (socketId) {
-    io.to(socketId).emit("payment-approved", { paymentId, ticketCode });
+    io.to(socketId).emit("payment-approved", { paymentId, ticketCode, bookingId });
   }
 
   res.json({ success: true });

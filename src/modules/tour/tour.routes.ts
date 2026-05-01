@@ -3,6 +3,7 @@ import multer from "multer";
 import { storage, uploadToCloudinary } from "../../utils/cloudinary.js";
 import { pool } from "../../db.js";
 import { requireAdmin } from "../../middleware/auth.js";
+import { io, userSockets } from "../../server.js";
 
 const router = express.Router();
 const upload = multer({ storage });
@@ -58,17 +59,45 @@ router.post(
    BOOK TOUR
 ========================= */
 router.post("/book", async (req, res) => {
-  const { tourId, userId } = req.body;
+  const { tourId, userId, people } = req.body;
 
   const result = await pool.query(
-    `INSERT INTO tour_bookings (tour_id, user_id)
+    `INSERT INTO tour_bookings (tour_id, people, user_id)
      VALUES ($1,$2) RETURNING *`,
-    [tourId, userId]
+    [tourId, userId, people]
   );
 
   res.json(result.rows[0]);
 });
+router.post("/tour/verify", async (req, res) => {
+  try {
+    const { qr } = req.body;
 
+    const bookingId = qr.split("|")[0].split(":")[1];
+
+    const result = await pool.query(
+      "SELECT * FROM tour_bookings WHERE id=$1",
+      [bookingId]
+    );
+
+    if (!result.rows.length) {
+      return res.json({ valid: false });
+    }
+
+    const booking = result.rows[0];
+
+    if (booking.status !== "CONFIRMED") {
+      return res.json({ valid: false });
+    }
+
+    return res.json({
+      valid: true,
+      people: booking.people,
+    });
+  } catch {
+    res.json({ valid: false });
+  }
+});
 /* =========================
    ADMIN APPROVE
 ========================= */
@@ -79,6 +108,25 @@ router.post("/approve", requireAdmin, async (req, res) => {
     "UPDATE tour_bookings SET status='CONFIRMED' WHERE id=$1",
     [bookingId]
   );
+
+  res.json({ success: true });
+});
+
+router.post("/admin/approve-tour", requireAdmin, async (req, res) => {
+  const { bookingId, userId } = req.body;
+
+  await pool.query(
+    "UPDATE tour_bookings SET status='CONFIRMED' WHERE id=$1",
+    [bookingId]
+  );
+
+  const socketId = userSockets.get(userId);
+
+  if (socketId) {
+    io.to(socketId).emit("tour-approved", {
+      bookingId,
+    });
+  }
 
   res.json({ success: true });
 });
