@@ -1,14 +1,14 @@
-import express from "express";
-import { approveBooking, approvePayment, generateTicket } from "./admin.controller.js";
-import { pool } from "../../db.js";
-import jwt from "jsonwebtoken";
-import { requireAdmin } from "../../middleware/auth.js";
-import { io, userSockets } from "../../server.js";
+// import express from "express";
+// import { approveBooking, approvePayment, generateTicket } from "./admin.controller.js";
+// import { pool } from "../../db.js";
+// import jwt from "jsonwebtoken";
+// import { requireAdmin } from "../../middleware/auth.js";
+// import { io, userSockets } from "../../server.js";
 
-const router = express.Router();
-/* =========================
-   🔐 ADMIN LOGIN
-========================= */
+// const router = express.Router();
+// /* =========================
+//    🔐 ADMIN LOGIN
+// ========================= */
 // router.post("/login", async (req, res) => {
 //   const { email, password } = req.body;
 
@@ -33,40 +33,40 @@ const router = express.Router();
 // });
 
 
-/* =========================
-   📦 GET BOOKINGS
-========================= */
-router.get("/bookings", async (req, res) => {
-  const result = await pool.query(
-    "SELECT * FROM bookings ORDER BY created_at DESC"
-  );
+// /* =========================
+//    📦 GET BOOKINGS
+// ========================= */
+// router.get("/bookings", async (req, res) => {
+//   const result = await pool.query(
+//     "SELECT * FROM bookings ORDER BY created_at DESC"
+//   );
 
-  res.json(result.rows);
-});
+//   res.json(result.rows);
+// });
 
-/* =========================
-   ❌ CANCEL BOOKING
-========================= */
-router.post("/cancel-booking", async (req, res) => {
-  const { bookingId } = req.body;
+// /* =========================
+//    ❌ CANCEL BOOKING
+// ========================= */
+// router.post("/cancel-booking", async (req, res) => {
+//   const { bookingId } = req.body;
 
-  // cancel booking
-  await pool.query(
-    "UPDATE bookings SET status='CANCELLED' WHERE id=$1",
-    [bookingId]
-  );
+//   // cancel booking
+//   await pool.query(
+//     "UPDATE bookings SET status='CANCELLED' WHERE id=$1",
+//     [bookingId]
+//   );
 
-  // 🔓 release seats
-  await pool.query(
-    "UPDATE seats SET status='available' WHERE id IN (SELECT unnest(string_to_array(seat, ','))::int FROM bookings WHERE id=$1)",
-    [bookingId]
-  );
+//   // 🔓 release seats
+//   await pool.query(
+//     "UPDATE seats SET status='available' WHERE id IN (SELECT unnest(string_to_array(seat, ','))::int FROM bookings WHERE id=$1)",
+//     [bookingId]
+//   );
 
-  res.json({ success: true });
-});
+//   res.json({ success: true });
+// });
 
-router.put("/approve/:bookingId", approveBooking);
-router.post("/approve-payment", approvePayment);
-router.post("/generate-ticket", generateTicket);
+// router.put("/approve/:bookingId", approveBooking);
+// router.post("/approve-payment", approvePayment);
+// router.post("/generate-ticket", generateTicket);
 
-export default router;
+// export default router;
