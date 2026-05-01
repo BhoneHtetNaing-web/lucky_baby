@@ -254,7 +254,7 @@ app.post("/booking/flight", requireAuth, async (req: any, res) => {
 });
 
 /* ================= TOUR ================= */
-app.get("/tour", async (req: Request, res: Response) => {
+app.get("/tours", async (req: Request, res: Response) => {
   const result = await pool.query("SELECT * FROM tours");
   res.json(result.rows);
 });
