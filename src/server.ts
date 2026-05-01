@@ -17,6 +17,7 @@ import adminRoutes from "./modules/admin/admin.routes.js";
 import ticketRoutes from "./modules/ticket/ticket.routes.js";
 import seatRoutes from "./modules/seat/seat.routes.js";
 import tourRoutes from "./modules/tour/tour.routes.js";
+import tourBookingRoutes from "./modules/tourBooking.routes.js";
 
 dotenv.config();
 
@@ -73,6 +74,7 @@ app.use("/payment", paymentRoutes);
 app.use("/ticket", ticketRoutes);
 app.use("/seat", seatRoutes);
 app.use("/tours", tourRoutes);
+app.use("/tour-bookings", tourBookingRoutes);
 app.use("/flights", flightRoutes);
 
 // ADMIN SYSTEM (MOBILE ADMIN APP)
