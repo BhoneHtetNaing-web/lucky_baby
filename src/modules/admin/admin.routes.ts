@@ -2,34 +2,35 @@ import express from "express";
 import { approveBooking, approvePayment, generateTicket } from "./admin.controller.js";
 import { pool } from "../../db.js";
 import jwt from "jsonwebtoken";
+import { requireAdmin } from "../../middleware/auth.js";
 import { io, userSockets } from "../../server.js";
 
 const router = express.Router();
 /* =========================
    🔐 ADMIN LOGIN
 ========================= */
-router.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+// router.post("/login", async (req, res) => {
+//   const { email, password } = req.body;
 
-  const result = await pool.query(
-    "SELECT * FROM users WHERE email=$1 AND role='admin'",
-    [email]
-  );
+//   const result = await pool.query(
+//     "SELECT * FROM users WHERE email=$1 AND role='admin'",
+//     [email]
+//   );
 
-  const admin = result.rows[0];
+//   const admin = result.rows[0];
 
-  if (!admin || admin.password !== password) {
-    return res.status(401).json({ message: "Invalid admin login" });
-  }
+//   if (!admin || admin.password !== password) {
+//     return res.status(401).json({ message: "Invalid admin login" });
+//   }
 
-  const token = jwt.sign(
-    { id: admin.id, role: "admin" },
-    process.env.JWT_SECRET as string,
-    { expiresIn: "7d" }
-  );
+//   const token = jwt.sign(
+//     { id: admin.id, role: "admin" },
+//     process.env.JWT_SECRET as string,
+//     { expiresIn: "7d" }
+//   );
 
-  res.json({ token, admin });
-});
+//   res.json({ token, admin });
+// });
 
 
 /* =========================

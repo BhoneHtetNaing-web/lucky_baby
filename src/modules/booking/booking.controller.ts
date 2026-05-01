@@ -1,6 +1,5 @@
 // booking.controller.ts
 import { Request, Response } from "express";
-// import { createBooking } from "./booking.service.js";
 import { pool } from "../../db.js";
 
 // export const bookSeats = async (req: any, res: Response) => {

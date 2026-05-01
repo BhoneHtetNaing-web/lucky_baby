@@ -118,3 +118,4 @@ export const login = async (req: Request, res: Response) => {
     userId: user.rows[0].id,
    });
 };
+
