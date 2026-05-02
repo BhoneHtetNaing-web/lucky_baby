@@ -11,8 +11,29 @@ import { Request, Response, NextFunction } from "express";
 import Stripe from "stripe";
 import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
+import { aiBookingAgent } from "./ai/ai.agent.js";
+import { aiRouter } from "./ai/ai.router.js";
+import { aiLearningAgent } from "./ai/learning-agent.js";
 
 dotenv.config();
+
+const ok = (res: Response, data: any) => {
+  return res.json({
+    success: true,
+    data,
+  });
+};
+
+const fail = (
+  res: Response,
+  message: string = "Server Error",
+  code: number = 500,
+) => {
+  return res.status(code).json({
+    success: false,
+    message,
+  });
+};
 
 const { Pool } = pkg;
 
@@ -30,28 +51,64 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 const userSockets = new Map();
 
+const onlineUsers = new Map();
+
 io.on("connection", (socket) => {
   socket.on("register-user", (userId) => {
     userSockets.set(userId, socket.id);
+    onlineUsers.set(userId, socket.id);
+
+    io.emit("users-online", Array.from(onlineUsers.keys()));
   });
+
+  // when booking confirmed
+  const notifyUser = (userId: string, message: string) => {
+    const socketId = userSockets.get(userId);
+
+    if (socketId) {
+      io.to(socketId).emit("notification", {
+        type: "BOOKING_CONFIRMED",
+        message,
+        time: new Date(),
+      });
+    }
+  };
 
   socket.on("join-flight", (id) => {
     socket.join(`flight-${id}`);
   });
+
   socket.on("join-tour", (id) => {
     socket.join(`tour-${id}`);
   });
+
   socket.on("admin-join", () => {
     socket.join("admin-room");
+  });
+
+  socket.on("system-alert", (data) => {
+    io.to("admin-room").emit("alert", {
+      type: data.type,
+      message: data.message,
+      level: data.level || "info",
+      time: new Date(),
+    });
+  });
+
+  socket.on("join-map", () => {
+    socket.join("world-map");
   });
 
   socket.on("disconnect", () => {
     for (let [userId, id] of userSockets.entries()) {
       if (id === socket.id) {
         userSockets.delete(userId);
+        onlineUsers.delete(userId); // 🔥 IMPORTANT FIX
         break;
       }
     }
+
+    io.emit("users-online", Array.from(onlineUsers.keys())); // 🔥 update
   });
 });
 
@@ -108,85 +165,68 @@ const requireAdmin = (req: any, res: Response, next: NextFunction) => {
 app.get("/", (req: Request, res: Response) => {
   res.send("🚀 FULL SYSTEM RUNNING");
 });
-app.post("/ai/chat", async (req: Request, res: Response) => {
+app.post("/ai/router", aiRouter);
+app.post("/ai/agent", aiBookingAgent);
+app.post("/ai/learning", aiLearningAgent);
+app.post("/ai/copilot", requireAuth, async (req: any, res) => {
   try {
     const { message } = req.body;
-
-    if (!message) {
-      return res.status(400).json({ reply: "Message is required" });
-    }
+    const userId = req.user.id;
 
     const text = message.toLowerCase();
 
     // =============================
-    // 🧠 SMART TRAVEL INTENT ROUTER
+    // 📡 USER CONTEXT BUILDER
     // =============================
+    let context: any = {};
 
-    // ✈️ Cheapest flight logic (instant response)
-    if (text.includes("cheapest flight")) {
-      const flight = await pool.query(
-        "SELECT * FROM flights ORDER BY price ASC LIMIT 1",
+    // ✈️ recent flights
+    if (text.includes("flight") || text.includes("trip")) {
+      context.flights = await pool.query(
+        `
+        SELECT f.from_city, f.to_city, b.status, b.created_at
+        FROM bookings b
+        JOIN flights f ON b.flight_id = f.id
+        WHERE b.user_id=$1
+        ORDER BY b.created_at DESC
+        LIMIT 5
+        `,
+        [userId],
       );
-
-      if (flight.rows.length > 0) {
-        return res.json({
-          reply: `✈️ Cheapest flight:\n${flight.rows[0].from} → ${flight.rows[0].to}\n💰 $${flight.rows[0].price}`,
-        });
-      }
     }
 
-    if (text.includes("best seat")) {
-      return res.json({
-        reply:
-          "💺 Recommended Seats:\n- Window: A1, A3\n- Comfort: B2\n- Fast Exit: C1\n(Chosen based on flight pattern optimization)",
-      });
-    }
-
-    if (text.includes("plan trip")) {
-      return res.json({
-        reply:
-          "🌍 AI Trip Plan:\n✈️ Cheapest Flight selected\n🏝 Best Tour matched\n💺 Optimal seat assigned\n💳 Payment route optimized",
-      });
-    }
-
-    // 🏝 Best tours
-    if (text.includes("best tour") || text.includes("3 days")) {
-      const tours = await pool.query(
-        "SELECT * FROM tours ORDER BY price ASC LIMIT 3",
+    // 🏝 tours
+    if (text.includes("tour") || text.includes("travel")) {
+      context.tours = await pool.query(
+        `
+        SELECT t.name, tb.status, tb.created_at
+        FROM tour_bookings tb
+        JOIN tours t ON tb.tour_id = t.id
+        WHERE tb.user_id=$1
+        ORDER BY tb.created_at DESC
+        LIMIT 5
+        `,
+        [userId],
       );
-
-      return res.json({
-        reply:
-          "🏝 Best Travel Packages:\n\n" +
-          tours.rows
-            .map((t: any) => `• ${t.title} - ${t.price} MMK`)
-            .join("\n"),
-      });
     }
 
-    // 🧭 Itinerary generator
-    if (text.includes("itinerary")) {
-      return res.json({
-        reply:
-          "🧭 3-Day Auto Itinerary:\n\n" +
-          "Day 1: Yangon City Tour\n" +
-          "Day 2: Bagan Sunset & Pagodas\n" +
-          "Day 3: Inle Lake Boat Experience",
-      });
-    }
-
-    // 💳 payment help
-    if (text.includes("payment")) {
-      return res.json({
-        reply:
-          "💳 Payment Options:\n- KBZ Pay\n- Wave Pay\n- Stripe Card\nUpload slip after payment for approval.",
-      });
+    // 💰 spending
+    if (text.includes("money") || text.includes("spent")) {
+      context.payments = await pool.query(
+        `
+        SELECT amount, status, created_at
+        FROM payments
+        WHERE user_id=$1
+        ORDER BY created_at DESC
+        LIMIT 5
+        `,
+        [userId],
+      );
     }
 
     // =============================
-    // 🤖 GPT (MAIN BRAIN)
+    // 🤖 AI PERSONAL COPILOT BRAIN
     // =============================
-
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -199,62 +239,252 @@ app.post("/ai/chat", async (req: Request, res: Response) => {
           {
             role: "system",
             content: `
-You are a high-level AI travel assistant inside a booking platform.
+You are PERSONAL TRAVEL COPILOT.
 
-You can help with:
-- flights
-- tours
-- booking system
-- payments
-- travel planning
-- itineraries
+You help ONE user only.
 
-Always answer short, practical, and helpful.
-If user asks pricing, suggest cheapest options.
+Rules:
+- analyze travel behavior
+- suggest next trip
+- show cheapest options
+- detect spending habits
+- be friendly and short
               `,
           },
-          { role: "user", content: message },
+          {
+            role: "user",
+            content: `
+USER REQUEST: ${message}
+
+USER DATA:
+${JSON.stringify(context)}
+              `,
+          },
         ],
       }),
     });
 
     const data = await response.json();
-    const reply = data?.choices?.[0]?.message?.content;
 
-    // =============================
-    // 🔁 FINAL FALLBACK
-    // =============================
-
-    if (!reply) {
-      return res.json({
-        reply:
-          "🤖 I can help you with flights, tours, booking, payments, and travel plans.",
-      });
-    }
-
-    return res.json({ reply });
+    return res.json({
+      success: true,
+      reply: data?.choices?.[0]?.message?.content,
+    });
   } catch (err) {
-    console.log("AI ERROR:", err);
+    console.log("USER COPILOT ERROR:", err);
 
     return res.status(500).json({
-      reply: "⚠️ AI service temporarily unavailable. Try again later.",
+      success: false,
+      reply: "User copilot failed",
     });
   }
 });
-app.post("/admin/ai", requireAdmin, async (req, res) => {
-  const { message } = req.body;
+app.post("/admin/copilot", requireAdmin, async (req: any, res) => {
+  try {
+    const { message } = req.body;
+    const text = message.toLowerCase();
 
-  if (message.includes("revenue")) {
-    const result = await pool.query(
-      "SELECT COALESCE(SUM(amount),0) as total FROM payments WHERE status='APPROVED'",
-    );
+    const run = async (q: string) => (await pool.query(q)).rows;
+
+    // =============================
+    // 📡 CONTEXT BUILDER
+    // =============================
+    let context: any = {};
+
+    if (text.includes("revenue")) {
+      context.revenue = await run(`
+        SELECT DATE(created_at) as date, SUM(amount)::int as total
+        FROM payments
+        WHERE status='APPROVED'
+        GROUP BY DATE(created_at)
+        ORDER BY date DESC
+        LIMIT 7
+      `);
+    }
+
+    if (text.includes("booking")) {
+      context.bookings = await run(`
+        SELECT COUNT(*)::int as total FROM bookings
+      `);
+    }
+
+    if (text.includes("user") || text.includes("top")) {
+      context.topUsers = await run(`
+        SELECT user_id, COUNT(*)::int as total
+        FROM bookings
+        GROUP BY user_id
+        ORDER BY total DESC
+        LIMIT 5
+      `);
+    }
+
+    if (text.includes("alert") || text.includes("problem")) {
+      context.recentErrors = await run(`
+        SELECT * FROM system_logs
+        ORDER BY created_at DESC
+        LIMIT 10
+      `);
+    }
+
+    // =============================
+    // 🤖 AI ANALYSIS ENGINE
+    // =============================
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `
+You are ADMIN AI COPILOT (NASA CONTROL ROOM SYSTEM).
+
+You must:
+- analyze system health
+- detect anomalies
+- summarize revenue trends
+- detect suspicious behavior
+- give alerts if needed
+
+Output style:
+- short
+- structured
+- operational
+              `,
+          },
+          {
+            role: "user",
+            content: `
+ADMIN QUERY: ${message}
+
+SYSTEM DATA:
+${JSON.stringify(context)}
+              `,
+          },
+        ],
+      }),
+    });
+
+    const data = await response.json();
 
     return res.json({
-      reply: `💰 Total Revenue: ${result.rows[0].total}`,
+      success: true,
+      reply: data?.choices?.[0]?.message?.content,
+    });
+  } catch (err) {
+    console.log("COPILOT ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      reply: "Admin Copilot failed",
     });
   }
+});
+app.post("/ai/history-insight", requireAuth, async (req: any, res) => {
+  try {
+    const userId = req.user.id;
 
-  return res.json({ reply: "Admin AI ready" });
+    // =============================
+    // 📡 STEP 1: FETCH USER HISTORY
+    // =============================
+    const history = await pool.query(
+      `
+      SELECT 
+        'flight' as type,
+        f.from_city || ' → ' || f.to_city as title,
+        b.status,
+        b.created_at
+      FROM bookings b
+      JOIN flights f ON b.flight_id = f.id
+      WHERE b.user_id=$1
+
+      UNION ALL
+
+      SELECT 
+        'tour' as type,
+        t.name as title,
+        tb.status,
+        tb.created_at
+      FROM tour_bookings tb
+      JOIN tours t ON tb.tour_id = t.id
+      WHERE tb.user_id=$1
+
+      UNION ALL
+
+      SELECT 
+        'payment' as type,
+        amount::text || ' MMK' as title,
+        status,
+        created_at
+      FROM payments
+      WHERE user_id=$1
+      `,
+      [userId],
+    );
+
+    // =============================
+    // 🧠 STEP 2: AI INSIGHT ENGINE
+    // =============================
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `
+You are a Travel History AI Analyst.
+
+You analyze user travel history like Google Timeline.
+
+Rules:
+- summarize travel activity
+- show spending pattern
+- detect favorite destinations
+- show behavior insights
+- DO NOT hallucinate data
+- keep response short and clear
+              `,
+          },
+          {
+            role: "user",
+            content: `
+USER HISTORY DATA:
+${JSON.stringify(history.rows)}
+              `,
+          },
+        ],
+      }),
+    });
+
+    const data = await response.json();
+
+    const reply =
+      data?.choices?.[0]?.message?.content || "No insight available.";
+
+    // =============================
+    // 📤 FINAL RESPONSE
+    // =============================
+    return res.json({
+      success: true,
+      reply,
+    });
+  } catch (err) {
+    console.log("HISTORY AI ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      reply: "AI insight failed",
+    });
+  }
 });
 /* ================= USERS (ADMIN CONTROL) ================= */
 app.get("/admin/users", requireAdmin, async (req, res) => {
@@ -824,7 +1054,58 @@ app.post("/admin/approve-payment", requireAdmin, async (req: any, res) => {
     client.release();
   }
 });
+app.get("/my-trips", requireAuth, async (req: any, res) => {
+  try {
+    const flights = await pool.query(
+      `
+      SELECT 
+        b.id,
+        'FLIGHT' as type,
+        b.status,
+        b.seat,
+        b.ticket_code,
+        b.created_at,
+        f.from_city,
+        f.to_city,
+        f.departure_time
+      FROM bookings b
+      JOIN flights f ON b.flight_id = f.id
+      WHERE b.user_id = $1
+      AND b.status = 'CONFIRMED'
+      `,
+      [req.user.id],
+    );
 
+    const tours = await pool.query(
+      `
+      SELECT 
+        tb.id,
+        'TOUR' as type,
+        tb.status,
+        tb.created_at,
+        t.name,
+        t.location
+      FROM tour_bookings tb
+      JOIN tours t ON tb.tour_id = t.id
+      WHERE tb.user_id = $1
+      AND tb.status = 'CONFIRMED'
+      `,
+      [req.user.id],
+    );
+
+    const trips = [...flights.rows, ...tours.rows];
+
+    trips.sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+
+    return res.json(trips);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "My trips error" });
+  }
+});
 /* ================= CANCEL ================= */
 app.post("/admin/cancel", requireAdmin, async (req: any, res) => {
   const client = await pool.connect();
@@ -875,10 +1156,9 @@ app.get("/ticket/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const booking = await pool.query(
-      `SELECT * FROM bookings WHERE id=$1`,
-      [id]
-    );
+    const booking = await pool.query(`SELECT * FROM bookings WHERE id=$1`, [
+      id,
+    ]);
 
     if (!booking.rows.length) {
       return res.status(404).json({ message: "Ticket not found" });
@@ -887,6 +1167,15 @@ app.get("/ticket/:id", async (req: Request, res: Response) => {
     const data = booking.rows[0];
 
     // DO NOT INSERT HERE ❌ (only fetch)
+    // 🎯 QR payload
+    const qrPayload = JSON.stringify({
+      bookingId: data.id,
+      flight: data.flight_id,
+      seat: data.seat,
+      status: data.status,
+    });
+
+    const qrCode = await QRCode.toDataURL(qrPayload);
 
     return res.json({
       id: data.id,
@@ -894,6 +1183,7 @@ app.get("/ticket/:id", async (req: Request, res: Response) => {
       seats: data.seat?.split(",") || [],
       status: data.status,
       ticket_code: data.ticket_code || `TKT-${data.id}`,
+      qr: qrCode,
     });
   } catch (err) {
     console.log(err);
@@ -905,10 +1195,9 @@ app.get("/ticket/pdf/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const booking = await pool.query(
-      `SELECT * FROM bookings WHERE id=$1`,
-      [id]
-    );
+    const booking = await pool.query(`SELECT * FROM bookings WHERE id=$1`, [
+      id,
+    ]);
 
     if (!booking.rows.length) {
       return res.status(404).json({ message: "Ticket not found" });
@@ -918,14 +1207,8 @@ app.get("/ticket/pdf/:id", async (req: Request, res: Response) => {
 
     const doc = new PDFDocument({ size: "A4", margin: 40 });
 
-    res.setHeader(
-      "Content-Type",
-      "application/pdf"
-    );
-    res.setHeader(
-      "Content-Disposition",
-      `inline; filename=ticket-${id}.pdf`
-    );
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename=ticket-${id}.pdf`);
 
     doc.pipe(res);
 
@@ -947,12 +1230,14 @@ app.get("/ticket/pdf/:id", async (req: Request, res: Response) => {
     doc.moveDown(2);
 
     // 🧾 FOOTER
-    doc.fontSize(10).text(
-      "This ticket is system-generated. Please show QR at airport gate.",
-      {
-        align: "center",
-      }
-    );
+    doc
+      .fontSize(10)
+      .text(
+        "This ticket is system-generated. Please show QR at airport gate.",
+        {
+          align: "center",
+        },
+      );
 
     doc.end();
   } catch (err) {
@@ -991,30 +1276,131 @@ app.post("/save-token", requireAuth, async (req: any, res) => {
 
   res.json({ success: true });
 });
+app.post("/admin/scan", requireAdmin, async (req, res) => {
+  const { ticketId } = req.body;
+
+  const ticket = await pool.query("SELECT * FROM bookings WHERE id=$1", [
+    ticketId,
+  ]);
+
+  if (!ticket.rows.length) {
+    return res.json({ valid: false, message: "❌ Invalid Ticket" });
+  }
+
+  if (ticket.rows[0].status === "CHECKED_IN") {
+    return res.json({ valid: false, message: "⚠️ Already checked in" });
+  }
+
+  await pool.query("UPDATE bookings SET status='CHECKED_IN' WHERE id=$1", [
+    ticketId,
+  ]);
+
+  res.json({
+    valid: true,
+    message: "✅ Boarding Approved",
+  });
+});
+app.post("/admin/biometric-checkin", requireAdmin, async (req, res) => {
+  const { ticketId, faceHash } = req.body;
+
+  const ticket = await pool.query("SELECT * FROM bookings WHERE id=$1", [
+    ticketId,
+  ]);
+
+  if (!ticket.rows.length) {
+    return res.json({ ok: false, message: "Invalid Ticket" });
+  }
+
+  const userFace = await pool.query("SELECT face_hash FROM users WHERE id=$1", [
+    ticket.rows[0].user_id,
+  ]);
+
+  // simple match simulation
+  const match = userFace.rows[0]?.face_hash === faceHash;
+
+  if (!match) {
+    return res.json({
+      ok: false,
+      message: "Face mismatch ❌",
+    });
+  }
+
+  await pool.query("UPDATE bookings SET status='CHECKED_IN' WHERE id=$1", [
+    ticketId,
+  ]);
+
+  res.json({
+    ok: true,
+    message: "✅ Biometric Check-in Approved",
+  });
+});
 /* ================= HISTORY =================== */
 app.get("/history", requireAuth, async (req: any, res) => {
-  const flights = await pool.query(
-    `SELECT id, 'flight' as type, status, created_at
-     FROM bookings WHERE user_id=$1`,
-    [req.user.id],
-  );
+  try {
+    const flights = await pool.query(
+      `
+      SELECT 
+        b.id,
+        'flight' as type,
+        f.from_city || ' → ' || f.to_city as title,
+        b.status,
+        b.created_at
+      FROM bookings b
+      JOIN flights f ON b.flight_id = f.id
+      WHERE b.user_id=$1
+      `,
+      [req.user.id],
+    );
 
-  const tours = await pool.query(
-    `SELECT id, 'tour' as type, status, created_at
-     FROM tour_bookings WHERE user_id=$1`,
-    [req.user.id],
-  );
+    const tours = await pool.query(
+      `
+      SELECT 
+        tb.id,
+        'tour' as type,
+        t.name as title,
+        tb.status,
+        tb.created_at
+      FROM tour_bookings tb
+      JOIN tours t ON tb.tour_id = t.id
+      WHERE tb.user_id=$1
+      `,
+      [req.user.id],
+    );
 
-  const merged = [...flights.rows, ...tours.rows];
+    const merged = [...flights.rows, ...tours.rows];
 
-  merged.sort(
-    (a, b) =>
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-  );
+    merged.sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
 
-  res.json(merged);
+    res.json(merged);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "History failed" });
+  }
 });
 /* ================= ADMIN STATS ================= */
+app.get("/admin/live-stats", requireAdmin, async (req, res) => {
+  const revenue = await pool.query(`
+    SELECT COALESCE(SUM(amount),0) as revenue
+    FROM payments WHERE status='APPROVED'
+  `);
+
+  const bookings = await pool.query(`
+    SELECT COUNT(*) FROM bookings
+  `);
+
+  const users = await pool.query(`
+    SELECT COUNT(*) FROM users
+  `);
+
+  res.json({
+    revenue: revenue.rows[0].revenue,
+    bookings: bookings.rows[0].count,
+    users: users.rows[0].count,
+  });
+});
 app.get("/admin/stats", requireAdmin, async (req: Request, res: Response) => {
   const revenue = await pool.query(
     "SELECT SUM(amount) FROM payments WHERE status='APPROVED'",
@@ -1027,173 +1413,205 @@ app.get("/admin/stats", requireAdmin, async (req: Request, res: Response) => {
     users: users.rows[0].count,
   });
 });
-app.get(
-  "/admin/dashboard",
-  requireAdmin,
-  async (req: Request, res: Response) => {
-    try {
-      const users = await pool.query("SELECT COUNT(*) FROM users");
-      const bookings = await pool.query("SELECT COUNT(*) FROM bookings");
-      const tours = await pool.query("SELECT COUNT(*) FROM tour_bookings");
-      const revenue = await pool.query(
-        "SELECT SUM(amount) FROM payments WHERE status='APPROVED'",
-      );
+app.get("/admin/dashboard", requireAdmin, async (req: any, res: Response) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM users) as users,
+        (SELECT COUNT(*) FROM bookings) as flight_bookings,
+        (SELECT COUNT(*) FROM tour_bookings) as tour_bookings,
+        (SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='APPROVED') as revenue
+    `);
 
-      res.json({
-        users: users.rows[0].count,
-        bookings: bookings.rows[0].count,
-        tours: tours.rows[0].count,
-        revenue: revenue.rows[0].sum || 0,
-      });
-    } catch (err) {
-      console.log(err);
-      res.status(500).json({ error: "dashboard error" });
-    }
-  },
-);
-app.get("/my-bookings", requireAuth, async (req: any, res) => {
-  const flights = await pool.query(
-    `
-    SELECT 
-      b.id,
-      'flight' as type,
-      b.status,
-      b.seat,
-      b.ticket_code,
-      b.created_at,
-      f.from_city,
-      f.to_city,
-      f.departure_time
-    FROM bookings b
-    JOIN flights f ON b.flight_id = f.id
-    WHERE b.user_id = $1
-  `,
-    [req.user.id],
-  );
-
-  const tours = await pool.query(
-    `
-    SELECT 
-      tb.id,
-      'tour' as type,
-      tb.status,
-      tb.created_at,
-      t.name
-    FROM tour_bookings tb
-    JOIN tours t ON tb.tour_id = t.id
-    WHERE tb.user_id = $1
-  `,
-    [req.user.id],
-  );
-
-  const combined = [...flights.rows, ...tours.rows];
-
-  combined.sort(
-    (a, b) =>
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-  );
-
-  res.json(combined);
+    ok(res, result.rows[0]);
+  } catch (err) {
+    console.error("DASHBOARD ERROR:", err);
+    fail(res, "Dashboard fetch failed");
+  }
 });
 app.get("/admin/full-bookings", requireAdmin, async (req, res) => {
-  const flights = await pool.query(`
-    SELECT
-      b.id,
-      'flight' as type,
-      b.status,
-      b.seat,
-      b.ticket_code,
-      u.email,
-      f.from_city,
-      f.to_city,
-      p.status as payment_status
-    FROM bookings b
-    JOIN users u ON b.user_id = u.id
-    JOIN flights f ON b.flight_id = f.id
-    LEFT JOIN payments p ON p.booking_id = b.id
-  `);
+  try {
+    const result = await pool.query(`
+      SELECT 
+        b.id,
+        'FLIGHT' as type,
+        b.status,
+        b.seat,
+        b.ticket_code,
+        u.email,
+        f.from_city,
+        f.to_city,
+        COALESCE(p.status, 'UNPAID') as payment_status,
+        b.created_at
+      FROM bookings b
+      JOIN users u ON b.user_id = u.id
+      JOIN flights f ON b.flight_id = f.id
+      LEFT JOIN payments p ON p.booking_id = b.id
 
-  const tours = await pool.query(`
-    SELECT 
-      tb.id,
-      'tour' as type,
-      tb.status,
-      u.email,
-      t.name,
-      p.status as payment_status
-    FROM tour_bookings tb
-    JOIN users u ON tb.user_id = u.id
-    JOIN tours t ON tb.tour_id = t.id
-    LEFT JOIN payments p ON p.booking_id = tb.id
-  `);
+      UNION ALL
 
-  res.json({
-    flights: flights.rows,
-    tours: tours.rows,
-  });
+      SELECT 
+        tb.id,
+        'TOUR' as type,
+        tb.status,
+        NULL as seat,
+        tb.ticket_code,
+        u.email,
+        NULL,
+        NULL,
+        COALESCE(p.status, 'UNPAID'),
+        tb.created_at
+      FROM tour_bookings tb
+      JOIN users u ON tb.user_id = u.id
+      JOIN tours t ON tb.tour_id = t.id
+      LEFT JOIN payments p ON p.booking_id = tb.id
+
+      ORDER BY created_at DESC
+    `);
+
+    ok(res, result.rows);
+  } catch (err) {
+    console.error(err);
+    fail(res, "Failed to fetch bookings");
+  }
 });
 app.get("/admin/analytics", requireAdmin, async (req, res) => {
-  const revenue = await pool.query(`
-    SELECT DATE(created_at) as day, SUM(amount)
-    FROM payments
-    WHERE status='APPROVED'
-    GROUP BY DATE(created_at)
-    ORDER BY DATE(created_at) DESC
-  `);
+  try {
+    const revenue = await pool.query(`
+      SELECT 
+        DATE(created_at) as date,
+        SUM(amount)::int as revenue
+      FROM payments
+      WHERE status='APPROVED'
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `);
 
-  const bookings = await pool.query(
-    "SELECT DATE(created_at) as day, COUNT(*) FROM bookings GROUP BY DATE(created_at) ORDER BY DATE(created_at) DESC",
-  );
+    const bookings = await pool.query(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*)::int as bookings
+      FROM bookings
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `);
 
-  res.json({
-    revenue: revenue.rows,
-    bookings: bookings.rows,
-  });
+    ok(res, {
+      revenue: revenue.rows,
+      bookings: bookings.rows,
+    });
+  } catch (err) {
+    console.error(err);
+    fail(res, "Analytics error");
+  }
 });
 app.get("/admin/analytics/peak-hours", requireAdmin, async (req, res) => {
-  const result = await pool.query(`
-    SELECT 
-      EXTRACT(HOUR FROM created_at) as hour,
-      COUNT(*) as bookings
-    FROM bookings
-    GROUP BY hour
-    ORDER BY bookings DESC
-  `);
+  try {
+    const result = await pool.query(`
+      SELECT 
+        EXTRACT(HOUR FROM created_at)::int as hour,
+        COUNT(*)::int as total
+      FROM bookings
+      GROUP BY hour
+      ORDER BY total DESC
+    `);
 
-  res.json(result.rows);
+    ok(res, result.rows);
+  } catch (err) {
+    fail(res, "Peak hours error");
+  }
 });
 app.get("/admin/analytics/user-behavior", requireAdmin, async (req, res) => {
-  const result = await pool.query(`
-    SELECT 
-      type,
-      COUNT(*) as total
-    FROM (
-      SELECT 'FLIGHT' as type FROM bookings
-      UNION ALL
-      SELECT 'TOUR' as type FROM tour_bookings
-    ) t
-    GROUP BY type
-  `);
+  try {
+    const result = await pool.query(`
+      SELECT 
+        type,
+        COUNT(*)::int as total
+      FROM (
+        SELECT 'FLIGHT' as type FROM bookings
+        UNION ALL
+        SELECT 'TOUR' as type FROM tour_bookings
+      ) t
+      GROUP BY type
+    `);
 
-  res.json(result.rows);
+    ok(res, result.rows);
+  } catch {
+    fail(res, "Behavior error");
+  }
 });
 app.get("/admin/analytics/active-users", requireAdmin, async (req, res) => {
-  const result = await pool.query(`
-    SELECT COUNT(DISTINCT user_id) as active_users
-    FROM bookings
-    WHERE created_at > NOW() - INTERVAL '7 days'
-  `);
+  try {
+    const result = await pool.query(`
+      SELECT COUNT(DISTINCT user_id)::int as active_users
+      FROM bookings
+      WHERE created_at > NOW() - INTERVAL '7 days'
+    `);
 
-  res.json(result.rows[0]);
+    ok(res, result.rows[0]);
+  } catch {
+    fail(res, "Active users error");
+  }
+});
+app.get("/my-bookings", requireAuth, async (req: any, res) => {
+  try {
+    const result = await pool.query(
+      `
+SELECT * FROM (
+  SELECT 
+    b.id,
+    'FLIGHT' as type,
+    b.status,
+    b.seat,
+    b.ticket_code,
+    b.created_at,
+    f.from_city,
+    f.to_city
+  FROM bookings b
+  JOIN flights f ON b.flight_id = f.id
+  WHERE b.user_id = $1
+
+  UNION ALL
+
+  SELECT 
+    tb.id,
+    'TOUR' as type,
+    tb.status,
+    NULL as seat,
+    tb.ticket_code,
+    tb.created_at,
+    NULL as from_city,
+    t.name as to_city
+  FROM tour_bookings tb
+  JOIN tours t ON tb.tour_id = t.id
+  WHERE tb.user_id = $1
+) all_data
+ORDER BY created_at DESC
+    `,
+      [req.user.id],
+    );
+
+    ok(res, result.rows);
+  } catch {
+    fail(res, "My bookings error");
+  }
 });
 app.get("/admin/revenue", requireAdmin, async (req, res) => {
-  const result = await pool.query(
-    "SELECT SUM(amount) FROM payments WHERE status='APPROVED'",
-  );
+  try {
+    const result = await pool.query(`
+      SELECT 
+        DATE(created_at) as x,
+        SUM(amount)::int as y
+      FROM payments
+      WHERE status='APPROVED'
+      GROUP BY DATE(created_at)
+      ORDER BY x ASC
+    `);
 
-  res.json({
-    total: result.rows[0].sum || 0,
-  });
+    ok(res, result.rows);
+  } catch (err) {
+    fail(res, "Revenue error");
+  }
 });
 app.get("/admin/revenue/daily", requireAdmin, async (req, res) => {
   const result = await pool.query(`
