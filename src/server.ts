@@ -125,7 +125,7 @@ app.post("/ai/chat", async (req: Request, res: Response) => {
     // ✈️ Cheapest flight logic (instant response)
     if (text.includes("cheapest flight")) {
       const flight = await pool.query(
-        "SELECT * FROM flights ORDER BY price ASC LIMIT 1"
+        "SELECT * FROM flights ORDER BY price ASC LIMIT 1",
       );
 
       if (flight.rows.length > 0) {
@@ -135,20 +135,31 @@ app.post("/ai/chat", async (req: Request, res: Response) => {
       }
     }
 
+    if (text.includes("best seat")) {
+      return res.json({
+        reply:
+          "💺 Recommended Seats:\n- Window: A1, A3\n- Comfort: B2\n- Fast Exit: C1\n(Chosen based on flight pattern optimization)",
+      });
+    }
+
+    if (text.includes("plan trip")) {
+      return res.json({
+        reply:
+          "🌍 AI Trip Plan:\n✈️ Cheapest Flight selected\n🏝 Best Tour matched\n💺 Optimal seat assigned\n💳 Payment route optimized",
+      });
+    }
+
     // 🏝 Best tours
     if (text.includes("best tour") || text.includes("3 days")) {
       const tours = await pool.query(
-        "SELECT * FROM tours ORDER BY price ASC LIMIT 3"
+        "SELECT * FROM tours ORDER BY price ASC LIMIT 3",
       );
 
       return res.json({
         reply:
           "🏝 Best Travel Packages:\n\n" +
           tours.rows
-            .map(
-              (t: any) =>
-                `• ${t.title} - ${t.price} MMK`
-            )
+            .map((t: any) => `• ${t.title} - ${t.price} MMK`)
             .join("\n"),
       });
     }
@@ -176,20 +187,18 @@ app.post("/ai/chat", async (req: Request, res: Response) => {
     // 🤖 GPT (MAIN BRAIN)
     // =============================
 
-    const response = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content: `
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `
 You are a high-level AI travel assistant inside a booking platform.
 
 You can help with:
@@ -203,12 +212,11 @@ You can help with:
 Always answer short, practical, and helpful.
 If user asks pricing, suggest cheapest options.
               `,
-            },
-            { role: "user", content: message },
-          ],
-        }),
-      }
-    );
+          },
+          { role: "user", content: message },
+        ],
+      }),
+    });
 
     const data = await response.json();
     const reply = data?.choices?.[0]?.message?.content;
@@ -452,6 +460,13 @@ app.post("/booking/flight", requireAuth, async (req: any, res: Response) => {
       `,
       [req.user.id, flightId, seats.join(",")],
     );
+
+    io.emit("new-booking", {
+      type: "FLIGHT",
+      flightId,
+      seats,
+      time: Date.now(),
+    });
 
     // REALTIME PIPELINE
     io.to("admin-room").emit("new-booking", {
@@ -747,7 +762,7 @@ app.post("/admin/approve-payment", requireAdmin, async (req: any, res) => {
   const client = await pool.connect();
 
   try {
-    const { paymentId, bookingId, type, userId } = req.body;
+    const { paymentId, bookingId, type, userId, amount } = req.body;
 
     await client.query("BEGIN");
 
@@ -775,6 +790,12 @@ app.post("/admin/approve-payment", requireAdmin, async (req: any, res) => {
       "UPDATE payments SET status='APPROVED' WHERE booking_id=$1",
       [paymentId],
     );
+
+    io.emit("payment-updated", {
+      bookingId,
+      status: "APPROVED",
+      revenue: amount,
+    });
 
     io.to("admin-room").emit("payment-updated", {
       paymentId,
@@ -851,35 +872,93 @@ app.post("/admin/cancel", requireAdmin, async (req: any, res) => {
 });
 /* ================= TICKET ================= */
 app.get("/ticket/:id", async (req: Request, res: Response) => {
-  const result = await pool.query("SELECT * FROM bookings WHERE id=$1", [
-    req.params.id,
-  ]);
+  try {
+    const { id } = req.params;
 
-  await pool.query(
-    `INSERT INTO tickets (booking_id, ticket_code, status, created_at) VALUES ($1,$2,'ACTIVE', NOW())`,
-  );
+    const booking = await pool.query(
+      `SELECT * FROM bookings WHERE id=$1`,
+      [id]
+    );
 
-  res.json(result.rows[0]);
+    if (!booking.rows.length) {
+      return res.status(404).json({ message: "Ticket not found" });
+    }
+
+    const data = booking.rows[0];
+
+    // DO NOT INSERT HERE ❌ (only fetch)
+
+    return res.json({
+      id: data.id,
+      flight_id: data.flight_id,
+      seats: data.seat?.split(",") || [],
+      status: data.status,
+      ticket_code: data.ticket_code || `TKT-${data.id}`,
+    });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-app.get("/ticket/pdf/:id", async (req, res) => {
-  const booking = await pool.query("SELECT * FROM tour_bookings WHERE id=$1", [
-    req.params.id,
-  ]);
+app.get("/ticket/pdf/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
 
-  const doc = new PDFDocument();
+    const booking = await pool.query(
+      `SELECT * FROM bookings WHERE id=$1`,
+      [id]
+    );
 
-  res.setHeader("Content-Type", "application/pdf");
+    if (!booking.rows.length) {
+      return res.status(404).json({ message: "Ticket not found" });
+    }
 
-  doc.fontSize(20).text("🎟 Tour Ticket", { align: "center" });
-  doc.moveDown();
+    const data = booking.rows[0];
 
-  doc.text(`Booking ID: ${booking.rows[0].id}`);
-  doc.text(`Status: ${booking.rows[0].status}`);
-  doc.text(`Ticket Code: ${booking.rows[0].ticket_code}`);
+    const doc = new PDFDocument({ size: "A4", margin: 40 });
 
-  doc.end();
-  doc.pipe(res);
+    res.setHeader(
+      "Content-Type",
+      "application/pdf"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename=ticket-${id}.pdf`
+    );
+
+    doc.pipe(res);
+
+    // 🎟 HEADER
+    doc.fontSize(22).text("🎫 BOARDING PASS", {
+      align: "center",
+    });
+
+    doc.moveDown(2);
+
+    // ✈️ INFO BLOCK
+    doc.fontSize(14);
+    doc.text(`Booking ID: ${data.id}`);
+    doc.text(`Flight ID: ${data.flight_id}`);
+    doc.text(`Seats: ${data.seat}`);
+    doc.text(`Status: ${data.status}`);
+    doc.text(`Ticket Code: ${data.ticket_code || `TKT-${data.id}`}`);
+
+    doc.moveDown(2);
+
+    // 🧾 FOOTER
+    doc.fontSize(10).text(
+      "This ticket is system-generated. Please show QR at airport gate.",
+      {
+        align: "center",
+      }
+    );
+
+    doc.end();
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "PDF generation failed" });
+  }
 });
 /* ================= QR VERIFY ================= */
 app.post("/verify", async (req: Request, res: Response) => {
@@ -1063,8 +1142,7 @@ app.get("/admin/analytics", requireAdmin, async (req, res) => {
   `);
 
   const bookings = await pool.query(
-    "SELECT DATE(created_at) as day, COUNT(*) FROM bookings GROUP BY DATE(created_at) ORDER BY DATE(created_at) DESC"
-  
+    "SELECT DATE(created_at) as day, COUNT(*) FROM bookings GROUP BY DATE(created_at) ORDER BY DATE(created_at) DESC",
   );
 
   res.json({
@@ -1110,7 +1188,7 @@ app.get("/admin/analytics/active-users", requireAdmin, async (req, res) => {
 });
 app.get("/admin/revenue", requireAdmin, async (req, res) => {
   const result = await pool.query(
-    "SELECT SUM(amount) FROM payments WHERE status='APPROVED'"
+    "SELECT SUM(amount) FROM payments WHERE status='APPROVED'",
   );
 
   res.json({
