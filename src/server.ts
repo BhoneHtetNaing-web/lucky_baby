@@ -101,6 +101,91 @@ app.get("/", (req: Request, res: Response) => {
   res.send("🚀 FULL SYSTEM RUNNING");
 });
 
+app.post("/ai/chat", async (req: Request, res: Response) => {
+  const { message } = req.body;
+
+  app.post("/ai/chat", async (req, res) => {
+    const { message } = req.body;
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer YOUR_OPENAI_KEY`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a travel assistant for booking flights and tours.",
+          },
+          {
+            role: "user",
+            content: message,
+          },
+        ],
+      }),
+    });
+
+    const data = await response.json();
+
+    res.json({
+      reply: data.choices[0].message.content,
+    });
+  });
+
+  // 🔥 simple logic (later GPT connect)
+  if (message.includes("tour")) {
+    return res.json({ reply: "We have 7 amazing tours available!" });
+  }
+
+  if (message.includes("flight")) {
+    return res.json({ reply: "You can book flights with seats & QR tickets." });
+  }
+
+  res.json({ reply: "Ask me about tours, flights, payments!" });
+});
+
+app.post("/admin/ai", async (req, res) => {
+  const { message } = req.body;
+
+  if (message.includes("revenue")) {
+    const result = await pool.query(
+      "SELECT SUM(amount) FROM payments WHERE status='APPROVED'"
+    );
+
+    return res.json({
+      reply: `Revenue: ${result.rows[0].sum}`,
+    });
+  }
+});
+
+app.get(
+  "/admin/dashboard",
+  requireAdmin,
+  async (req: Request, res: Response) => {
+    try {
+      const users = await pool.query("SELECT COUNT(*) FROM users");
+      const bookings = await pool.query("SELECT COUNT(*) FROM bookings");
+      const tours = await pool.query("SELECT COUNT(*) FROM tour_bookings");
+      const revenue = await pool.query(
+        "SELECT SUM(amount) FROM payments WHERE status='APPROVED'",
+      );
+
+      res.json({
+        users: users.rows[0].count,
+        bookings: bookings.rows[0].count,
+        tours: tours.rows[0].count,
+        revenue: revenue.rows[0].sum || 0,
+      });
+    } catch (err) {
+      console.log(err);
+      res.status(500).json({ error: "dashboard error" });
+    }
+  },
+);
 /* ================= USERS (ADMIN CONTROL) ================= */
 app.get("/admin/users", requireAdmin, async (req, res) => {
   const result = await pool.query(
@@ -225,7 +310,29 @@ app.get("/flight", async (req: Request, res: Response) => {
   const result = await pool.query("SELECT * FROM flights");
   res.json(result.rows[0]);
 });
+/* ================= SEATS ================= */
+app.get("/seat/:flightId", async (req: Request, res: Response) => {
+  const result = await pool.query("SELECT * FROM seats WHERE flight_id=$1", [
+    req.params.flightId,
+  ]);
+  res.json(result.rows);
+});
+/* ================= LOCK SEAT ================= */
+app.post("/seat/lock", async (req: any, res: Response) => {
+  const { seatId, flightId } = req.body;
 
+  await pool.query(
+    "UPDATE seats SET status='locked', locked_by=$2 WHERE id=$1 AND status='available' RETURNING *",
+    [seatId, req.user.id],
+  );
+
+  io.to(`flight-${flightId}`).emit("seat-update", {
+    seatId,
+    status: "locked",
+  });
+
+  res.json({ success: true });
+});
 /* ================= BOOKING ================= */
 app.post("/booking/flight", requireAuth, async (req: any, res) => {
   const { flightId, seats } = req.body;
@@ -271,35 +378,32 @@ app.post("/booking/tour", requireAuth, async (req: any, res) => {
 
   res.json(booking.rows[0]);
 });
-
-/* ================= SEATS ================= */
-app.get("/seat/:flightId", async (req: Request, res: Response) => {
-  const result = await pool.query("SELECT * FROM seats WHERE flight_id=$1", [
-    req.params.flightId,
-  ]);
-  res.json(result.rows);
-});
-
-/* ================= LOCK SEAT ================= */
-app.post("/seat/lock", async (req: any, res: Response) => {
-  const { seatId, flightId } = req.body;
-
-  await pool.query(
-    "UPDATE seats SET status='locked', locked_by=$2 WHERE id=$1 AND status='available' RETURNING *",
-    [seatId, req.user.id],
-  );
-
-  io.to(`flight-${flightId}`).emit("seat-update", {
-    seatId,
-    status: "locked",
-  });
-
-  res.json({ success: true });
-});
-
 /* ================= PAYMENT ================= */
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2026-04-22.dahlia",
+});
+app.post("/stripe/flight-session", requireAuth, async (req: any, res) => {
+  const { bookingId, amount } = req.body;
+
+  const session = await stripe.checkout.sessions.create({
+    payment_method_types: ["card"],
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          product_data: { name: "Flight Booking" },
+          unit_amount: amount * 100,
+        },
+        quantity: 1,
+      },
+    ],
+    mode: "payment",
+    success_url: `exp://success?bookingId=${bookingId}`,
+    cancel_url: `exp://cancel`,
+    metadata: { bookingId, type: "FLIGHT" },
+  });
+
+  res.json({ url: session.url });
 });
 app.post("/stripe/create-session", async (req: Request, res: Response) => {
   const { amount, bookingId } = req.body;
@@ -317,8 +421,8 @@ app.post("/stripe/create-session", async (req: Request, res: Response) => {
       },
     ],
     mode: "payment",
-    success_url: `${process.env.BASE_URL}/success?bookingId=${bookingId}`,
-    cancel_url: `${process.env.BASE_URL}/cancel`,
+    success_url: `exp://${process.env.BASE_URL}/success?bookingId=${bookingId}`,
+    cancel_url: `exp://${process.env.BASE_URL}/cancel`,
     metadata: {
       bookingId,
     },
@@ -337,15 +441,25 @@ app.post(
       const session = event.data.object;
 
       const bookingId = session.metadata.bookingId;
+      const type = session.metadata.type;
 
+      if (type === "FLIGHT") {
+        await pool.query(
+          "UPDATE bookings SET status='CONFIRMED', ticket_code=$1 WHERE id=$2",
+          [`FL_${Date.now()}`, bookingId],
+        );
+      }
+
+      if (type === "TOUR") {
+        await pool.query(
+          "UPDATE tour_bookings SET status='CONFIRMED', ticket_code=$1 WHERE id=$2",
+          [`TR_${Date.now()}`, bookingId],
+        );
+      }
       await pool.query(
         "UPDATE payments SET status='APPROVED' WHERE booking_id=$1",
         [bookingId],
       );
-
-      await pool.query("UPDATE bookings SET status='CONFIRMED' WHERE id=$1", [
-        bookingId,
-      ]);
     }
 
     res.json({ received: true });
@@ -378,6 +492,7 @@ app.post("/payment/tour", requireAuth, async (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
+/* ================= UPLOAD SLIP ================= */
 app.post(
   "/payment/upload",
   upload.single("file"),
@@ -405,19 +520,6 @@ app.post(
       console.log(err);
       res.status(500).json({ error: "Upload failed" });
     }
-  },
-);
-
-/* ================= UPLOAD SLIP ================= */
-app.post(
-  "/payment/upload",
-  upload.single("file"),
-  async (req: Request, res: Response) => {
-    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
-
-    const result = await cloudinary.v2.uploader.upload(req.file.path);
-
-    res.json({ url: result.secure_url });
   },
 );
 
@@ -498,42 +600,25 @@ app.get("/ticket/:id", async (req: Request, res: Response) => {
 
   res.json(result.rows[0]);
 });
-app.get("/ticket/pdf/:bookingId", async (req, res) => {
-  const { bookingId } = req.params;
 
-  const result = await pool.query("SELECT * FROM bookings WHERE id=$1", [
-    bookingId,
+app.get("/ticket/pdf/:id", async (req, res) => {
+  const booking = await pool.query("SELECT * FROM tour_bookings WHERE id=$1", [
+    req.params.id,
   ]);
-
-  if (!result.rows.length) {
-    return res.status(404).send("Not found");
-  }
-
-  const booking = result.rows[0];
 
   const doc = new PDFDocument();
 
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename=ticket-${bookingId}.pdf`,
-  );
 
-  doc.pipe(res);
-  const qr = await QRCode.toDataURL(
-    `BOOKING:${bookingId}|SEAT:${booking.seat}`,
-  );
-
-  doc.fontSize(20).text("✈️ AIRLINE TICKET", { align: "center" });
+  doc.fontSize(20).text("🎟 Tour Ticket", { align: "center" });
   doc.moveDown();
 
-  doc.fontSize(14).text(`Booking ID: ${bookingId}`);
-  doc.text(`Seat: ${booking.seat}`);
-  doc.text(`Status: ${booking.status}`);
-
-  doc.image(qr, { width: 150 });
+  doc.text(`Booking ID: ${booking.rows[0].id}`);
+  doc.text(`Status: ${booking.rows[0].status}`);
+  doc.text(`Ticket Code: ${booking.rows[0].ticket_code}`);
 
   doc.end();
+  doc.pipe(res);
 });
 /* ================= QR VERIFY ================= */
 app.post("/verify", async (req: Request, res: Response) => {
@@ -554,6 +639,17 @@ app.post("/verify", async (req: Request, res: Response) => {
   }
 
   res.json({ valid: true, seat: booking.seat });
+});
+
+app.post("/save-token", requireAuth, async (req: any, res) => {
+  const { token } = req.body;
+
+  await pool.query("UPDATE users SET expo_token=$1 WHERE id=$2", [
+    token,
+    req.user.id,
+  ]);
+
+  res.json({ success: true });
 });
 /* ================= HISTORY =================== */
 app.get("/history", requireAuth, async (req: any, res) => {
@@ -640,7 +736,7 @@ app.get("/my-bookings", requireAuth, async (req: any, res) => {
 
 app.get("/admin/full-bookings", requireAdmin, async (req, res) => {
   const flights = await pool.query(`
-    SELECT 
+    SELECT
       b.id,
       'flight' as type,
       b.status,
