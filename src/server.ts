@@ -163,62 +163,57 @@ const requireAdmin = (req: any, res: Response, next: NextFunction) => {
 };
 app.post("/ai/agent", requireAuth, aiAgent);
 app.post("/ai/learning", aiLearning);
-app.post("/ai/copilot", requireAuth, async (req: any, res) => {
+app.post("/ai/copilot", requireAuth, async (req: any, res: Response) => {
   try {
     const { message } = req.body;
-    const userId = req.user.id;
 
-    const history = await pool.query(
-      `
-      SELECT 'flight' as type, created_at FROM bookings WHERE user_id=$1
-      UNION ALL
-      SELECT 'tour' as type, created_at FROM tour_bookings WHERE user_id=$1
-      ORDER BY created_at DESC
-      LIMIT 10
-      `,
-      [userId]
-    );
+    if (!process.env.OPENAI_KEY) {
+      return res.status(500).json({
+        reply: "❌ OPENAI KEY missing",
+      });
+    }
 
-    const response = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a personal travel AI assistant. Use user history only.",
-            },
-            {
-              role: "user",
-              content: JSON.stringify({
-                message,
-                history: history.rows,
-              }),
-            },
-          ],
-        }),
-      }
-    );
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: "You are a helpful travel assistant.",
+          },
+          {
+            role: "user",
+            content: message,
+          },
+        ],
+      }),
+    });
 
-    const data: any = await response.json();
+    const text = await response.text(); // 🔥 important debug
+    console.log("OPENAI RAW:", text);
 
-    const reply =
-      data?.choices?.[0]?.message?.content ??
-      "I couldn't generate a response.";
+    const data = JSON.parse(text);
 
-    return res.json({ reply });
-  } catch (err) {
-    console.log("COPILOT ERROR:", err);
+    if (!response.ok) {
+      return res.status(500).json({
+        reply: data.error?.message || "OpenAI failed",
+      });
+    }
 
-    return res.status(200).json({
-      reply: "⚠️ AI temporarily unavailable",
+    return res.json({
+      reply: data.choices?.[0]?.message?.content || "No reply",
+    });
+
+  } catch (err: any) {
+    console.log("AI ERROR:", err.message);
+
+    return res.status(500).json({
+      reply: "⚠️ AI server crash",
     });
   }
 });
