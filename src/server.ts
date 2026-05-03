@@ -12,7 +12,6 @@ import Stripe from "stripe";
 import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
 import { aiAgent } from "./ai/ai.agent.js";
-import { aiRouter } from "./ai/ai.router.js";
 import { aiLearning } from "./ai/learning-agent.js";
 import { aiHistoryInsight } from "./ai/memory.js";
 import { aiCopilot } from "./ai/ai.copilot.js";
@@ -163,7 +162,6 @@ const requireAdmin = (req: any, res: Response, next: NextFunction) => {
     return res.status(401).json({ message: "Unauthorized" });
   }
 };
-app.post("/ai/router", aiRouter);
 app.post("/ai/agent", requireAuth, aiAgent);
 app.post("/ai/learning", aiLearning);
 app.post("/ai/copilot", requireAuth, aiCopilot);
