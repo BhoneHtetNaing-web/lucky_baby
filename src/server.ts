@@ -605,7 +605,6 @@ app.get("/flight", async (req: Request, res: Response) => {
     res.status(500).json({ error: "Failed to fetch flights" });
   }
 });
-
 /* ================= SEATS ================= */
 app.get("/seat/:flightId", async (req: Request, res: Response) => {
   try {
@@ -620,7 +619,6 @@ app.get("/seat/:flightId", async (req: Request, res: Response) => {
     res.status(500).json({ error: "Seat fetch failed" });
   }
 });
-
 /* ================= LOCK SEAT ================= */
 app.post("/seat/lock", requireAuth, async (req: any, res: Response) => {
   try {
@@ -656,7 +654,6 @@ app.post("/seat/lock", requireAuth, async (req: any, res: Response) => {
     res.status(500).json({ error: "Seat lock failed" });
   }
 });
-
 /* ================= BOOKING FLIGHT ================= */
 app.post("/booking/flight", requireAuth, async (req: any, res: Response) => {
   const client = await pool.connect();
@@ -715,40 +712,94 @@ app.post("/booking/flight", requireAuth, async (req: any, res: Response) => {
     client.release();
   }
 });
+app.post("/visa/book", requireAuth, async (req: any, res: Response) => {
+  try {
+    const { visaType, data } = req.body;
 
-/* ================= TOUR LIST ================= */
+    const result = await pool.query(
+      `
+      INSERT INTO visa_requests (user_id, visa_type, data, status, created_at)
+      VALUES ($1,$2,$3,'PENDING',NOW())
+      RETURNING *
+      `,
+      [req.user.id, visaType, JSON.stringify(data)]
+    );
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "Visa booking failed" });
+  }
+});
+app.get("/admin/visa-requests", requireAdmin, async (req, res) => {
+  const result = await pool.query(`
+    SELECT v.*, u.name
+    FROM visa_requests v
+    JOIN users u ON v.user_id = u.id
+    ORDER BY created_at DESC
+  `);
+
+  res.json(result.rows);
+});
+// =============================
+// 🏝 GET ALL TOURS
+// =============================
 app.get("/tours", async (req: Request, res: Response) => {
   try {
-    const result = await pool.query("SELECT * FROM tours ORDER BY id DESC");
+    const result = await pool.query(`
+      SELECT id, name, price, description, image
+      FROM tours
+      ORDER BY id DESC
+    `);
 
-    res.json(result.rows);
+    ok(res, result.rows);
   } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: "Tour fetch failed" });
+    console.error("GET /tours error:", err);
+    fail(res, "Failed to fetch tours");
   }
 });
 /* ================= TOUR BY ID ================= */
 app.get("/tours/:id", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
 
-    const result = await pool.query("SELECT * FROM tours WHERE id = $1", [id]);
-
-    if (!result.rows.length) {
-      return res.status(404).json({ message: "Tour not found" });
+    if (!id) {
+      return fail(res, "Invalid tour ID", 400);
     }
 
-    res.json(result.rows[0]);
+    const result = await pool.query(`SELECT * FROM tours WHERE id = $1`, [id]);
+
+    if (!result.rows.length) {
+      return fail(res, "Tour not found", 404);
+    }
+
+    ok(res, result.rows[0]);
   } catch (err) {
-    console.log(err);
-    res.status(500).json({ message: "Server error" });
+    console.error("GET /tours/:id error:", err);
+    fail(res, "Server error");
   }
 });
-/* ================= TOUR BOOKING ================= */
+// =============================
+// 🎫 BOOK TOUR
+// =============================
 app.post("/booking/tour", requireAuth, async (req: any, res: Response) => {
   try {
     const { tourId } = req.body;
 
+    // ✅ VALIDATION
+    if (!tourId) {
+      return fail(res, "tourId is required", 400);
+    }
+
+    // ✅ CHECK TOUR EXISTS
+    const tour = await pool.query(`SELECT * FROM tours WHERE id = $1`, [
+      tourId,
+    ]);
+
+    if (!tour.rows.length) {
+      return fail(res, "Tour not found", 404);
+    }
+
+    // ✅ CREATE BOOKING
     const booking = await pool.query(
       `
       INSERT INTO tour_bookings (user_id, tour_id, status, created_at)
@@ -758,15 +809,19 @@ app.post("/booking/tour", requireAuth, async (req: any, res: Response) => {
       [req.user.id, tourId],
     );
 
-    io.to("admin-room").emit("new-booking", {
-      type: "TOUR",
-      booking,
-    });
+    const newBooking = booking.rows[0];
 
-    res.json(booking.rows[0]);
+    // ✅ SOCKET EMIT (REAL-TIME ADMIN)
+    if (typeof io !== "undefined") {
+      io.to("admin-room").emit("new-booking", {
+        type: "TOUR",
+        booking: newBooking,
+      });
+    }
+    ok(res, newBooking);
   } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: "Tour booking failed" });
+    console.error("POST /booking/tour error:", err);
+    fail(res, "Tour booking failed");
   }
 });
 /* ================= PAYMENT ================= */
@@ -871,82 +926,6 @@ app.post(
   },
 );
 
-/* ================= PAYMENT (CREATE) ================= */
-app.post("/payment/flight", requireAuth, async (req: any, res) => {
-  const client = await pool.connect();
-
-  try {
-    const { bookingId, amount, slip } = req.body;
-
-    await client.query("BEGIN");
-
-    // ❗ prevent duplicate payment
-    const existing = await client.query(
-      "SELECT * FROM payments WHERE booking_id=$1",
-      [bookingId],
-    );
-
-    if (existing.rows.length > 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: "Payment already exists" });
-    }
-
-    const payment = await client.query(
-      `INSERT INTO payments (booking_id, amount, type, status, slip_url, created_at)
-       VALUES ($1,$2,'FLIGHT','PENDING',$3,NOW())
-       RETURNING *`,
-      [bookingId, amount, slip || null],
-    );
-
-    await client.query("COMMIT");
-
-    res.json({ success: true, payment: payment.rows[0] });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.log(err);
-    res.status(500).json({ error: "Payment failed" });
-  } finally {
-    client.release();
-  }
-});
-
-app.post("/payment/tour", requireAuth, async (req: any, res) => {
-  const client = await pool.connect();
-
-  try {
-    const { bookingId, amount, slip } = req.body;
-
-    await client.query("BEGIN");
-
-    const existing = await client.query(
-      "SELECT * FROM payments WHERE booking_id=$1",
-      [bookingId],
-    );
-
-    if (existing.rows.length > 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: "Payment already exists" });
-    }
-
-    const payment = await client.query(
-      `INSERT INTO payments (booking_id, amount, type, status, slip_url, created_at)
-       VALUES ($1,$2,'TOUR','PENDING',$3,NOW())
-       RETURNING *`,
-      [bookingId, amount, slip || null],
-    );
-
-    await client.query("COMMIT");
-
-    res.json({ success: true, payment: payment.rows[0] });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.log(err);
-    res.status(500).json({ error: "Payment failed" });
-  } finally {
-    client.release();
-  }
-});
-
 /* ================= UPLOAD SLIP ================= */
 app.post(
   "/payment/upload",
@@ -988,71 +967,79 @@ app.get("/payment/:bookingId", async (req, res) => {
 });
 
 /* ================= ADMIN APPROVE ================= */
-app.post("/admin/approve-payment", requireAdmin, async (req: any, res) => {
-  const client = await pool.connect();
-
+app.post("/admin/approve-payment", requireAdmin, async (req, res) => {
   try {
-    const { paymentId, bookingId, type, userId, amount } = req.body;
+    const { paymentId, action } = req.body;
+    // action: APPROVE | REJECT
 
-    await client.query("BEGIN");
-
-    await client.query("UPDATE payments SET status='APPROVED' WHERE id=$1", [
-      paymentId,
-    ]);
-
-    const ticketCode = `TKT-${Date.now()}`;
-
-    if (type === "FLIGHT") {
-      await client.query(
-        "UPDATE bookings SET status='CONFIRMED', ticket_code=$1 WHERE id=$2",
-        [ticketCode, bookingId],
-      );
-    }
-
-    if (type === "TOUR") {
-      await client.query(
-        "UPDATE tour_bookings SET status='CONFIRMED', ticket_code=$1 WHERE id=$2",
-        [ticketCode, bookingId],
-      );
-    }
-
-    await pool.query(
-      "UPDATE payments SET status='APPROVED' WHERE booking_id=$1",
+    const payment = await pool.query(
+      `SELECT * FROM payments WHERE id=$1`,
       [paymentId],
     );
 
-    io.emit("payment-updated", {
-      bookingId,
-      status: "APPROVED",
-      revenue: amount,
-    });
-
-    io.to("admin-room").emit("payment-updated", {
-      paymentId,
-      status: "APPROVED",
-    });
-
-    await client.query("COMMIT");
-
-    // 🔥 SOCKET PUSH
-    const socketId = userSockets.get(userId);
-
-    if (socketId) {
-      io.to(socketId).emit("payment-approved", {
-        bookingId,
-        ticketCode,
-        type,
-      });
+    if (!payment.rows.length) {
+      return res.status(404).json({ error: "Payment not found" });
     }
 
-    res.json({ success: true, ticketCode });
+    const p = payment.rows[0];
+
+    // =====================
+    // UPDATE PAYMENT STATUS
+    // =====================
+    const updated = await pool.query(
+      `UPDATE payments
+       SET status=$1
+       WHERE id=$2
+       RETURNING *`,
+      [action === "APPROVE" ? "APPROVED" : "REJECTED", paymentId],
+    );
+
+    // =====================
+    // AUTO UPDATE BOOKING
+    // =====================
+    if (action === "APPROVE") {
+      if (p.type === "FLIGHT") {
+        await pool.query(
+          `UPDATE bookings SET status='CONFIRMED' WHERE id=$1`,
+          [p.booking_id],
+        );
+      }
+
+      if (p.type === "TOUR") {
+        await pool.query(
+          `UPDATE tour_bookings SET status='CONFIRMED' WHERE id=$1`,
+          [p.booking_id],
+        );
+      }
+
+      if (p.type === "VISA") {
+        await pool.query(
+          `UPDATE visa_bookings SET status='APPROVED' WHERE id=$1`,
+          [p.booking_id],
+        );
+      }
+    }
+
+    return res.json({
+      message: "Payment updated successfully",
+      data: updated.rows[0],
+    });
   } catch (err) {
-    await client.query("ROLLBACK");
     console.log(err);
-    res.status(500).json({ error: "Approval failed" });
-  } finally {
-    client.release();
+    res.status(500).json({ error: "Approve payment failed" });
   }
+});
+app.get("/admin/payments", requireAdmin, async (req, res) => {
+  const result = await pool.query(`
+    SELECT
+    p.*,
+    u.email
+    FROM payments p
+    JOIN users u ON u.id = p.user_id
+    ORDER BY p.created_at DESC
+  `);
+
+  res.json(result.rows);
 });
 app.get("/my-trips", requireAuth, async (req: any, res) => {
   try {
