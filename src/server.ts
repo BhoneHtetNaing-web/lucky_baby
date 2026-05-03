@@ -14,7 +14,6 @@ import QRCode from "qrcode";
 import { aiAgent } from "./ai/ai.agent.js";
 import { aiLearning } from "./ai/learning-agent.js";
 import { aiHistoryInsight } from "./ai/memory.js";
-import { aiCopilot } from "./ai/ai.copilot.js";
 import fetch from "node-fetch";
 
 dotenv.config();
@@ -208,7 +207,7 @@ app.post("/ai/copilot", requireAuth, async (req: any, res) => {
       }
     );
 
-    const data = await response.json();
+    const data: any = await response.json();
 
     const reply =
       data?.choices?.[0]?.message?.content ??
