@@ -11,9 +11,12 @@ import { Request, Response, NextFunction } from "express";
 import Stripe from "stripe";
 import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
-import { aiBookingAgent } from "./ai/ai.agent.js";
+import { aiAgent } from "./ai/ai.agent.js";
 import { aiRouter } from "./ai/ai.router.js";
-import { aiLearningAgent } from "./ai/learning-agent.js";
+import { aiLearning } from "./ai/learning-agent.js";
+import { aiHistoryInsight } from "./ai/memory.js";
+import { aiCopilot } from "./ai/ai.copilot.js";
+import fetch from "node-fetch";
 
 dotenv.config();
 
@@ -160,332 +163,121 @@ const requireAdmin = (req: any, res: Response, next: NextFunction) => {
     return res.status(401).json({ message: "Unauthorized" });
   }
 };
+app.post("/ai/router", aiRouter);
+app.post("/ai/agent", requireAuth, aiAgent);
+app.post("/ai/learning", aiLearning);
+app.post("/ai/copilot", requireAuth, aiCopilot);
+app.post("/ai/history-insight", requireAuth, aiHistoryInsight);
 
 /* ================= HEALTH ================= */
 app.get("/", (req: Request, res: Response) => {
   res.send("🚀 FULL SYSTEM RUNNING");
 });
-app.post("/ai/router", aiRouter);
-app.post("/ai/agent", aiBookingAgent);
-app.post("/ai/learning", aiLearningAgent);
-app.post("/ai/copilot", requireAuth, async (req: any, res) => {
-  try {
-    const { message } = req.body;
-    const userId = req.user.id;
+// app.post("/admin/copilot", requireAdmin, async (req: any, res) => {
+//   try {
+//     const { message } = req.body;
+//     const text = message.toLowerCase();
 
-    const text = message.toLowerCase();
+//     const run = async (q: string) => (await pool.query(q)).rows;
 
-    // =============================
-    // 📡 USER CONTEXT BUILDER
-    // =============================
-    let context: any = {};
+//     // =============================
+//     // 📡 CONTEXT BUILDER
+//     // =============================
+//     let context: any = {};
 
-    // ✈️ recent flights
-    if (text.includes("flight") || text.includes("trip")) {
-      context.flights = await pool.query(
-        `
-        SELECT f.from_city, f.to_city, b.status, b.created_at
-        FROM bookings b
-        JOIN flights f ON b.flight_id = f.id
-        WHERE b.user_id=$1
-        ORDER BY b.created_at DESC
-        LIMIT 5
-        `,
-        [userId],
-      );
-    }
+//     if (text.includes("revenue")) {
+//       context.revenue = await run(`
+//         SELECT DATE(created_at) as date, SUM(amount)::int as total
+//         FROM payments
+//         WHERE status='APPROVED'
+//         GROUP BY DATE(created_at)
+//         ORDER BY date DESC
+//         LIMIT 7
+//       `);
+//     }
 
-    // 🏝 tours
-    if (text.includes("tour") || text.includes("travel")) {
-      context.tours = await pool.query(
-        `
-        SELECT t.name, tb.status, tb.created_at
-        FROM tour_bookings tb
-        JOIN tours t ON tb.tour_id = t.id
-        WHERE tb.user_id=$1
-        ORDER BY tb.created_at DESC
-        LIMIT 5
-        `,
-        [userId],
-      );
-    }
+//     if (text.includes("booking")) {
+//       context.bookings = await run(`
+//         SELECT COUNT(*)::int as total FROM bookings
+//       `);
+//     }
 
-    // 💰 spending
-    if (text.includes("money") || text.includes("spent")) {
-      context.payments = await pool.query(
-        `
-        SELECT amount, status, created_at
-        FROM payments
-        WHERE user_id=$1
-        ORDER BY created_at DESC
-        LIMIT 5
-        `,
-        [userId],
-      );
-    }
+//     if (text.includes("user") || text.includes("top")) {
+//       context.topUsers = await run(`
+//         SELECT user_id, COUNT(*)::int as total
+//         FROM bookings
+//         GROUP BY user_id
+//         ORDER BY total DESC
+//         LIMIT 5
+//       `);
+//     }
 
-    // =============================
-    // 🤖 AI PERSONAL COPILOT BRAIN
-    // =============================
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `
-You are PERSONAL TRAVEL COPILOT.
+//     if (text.includes("alert") || text.includes("problem")) {
+//       context.recentErrors = await run(`
+//         SELECT * FROM system_logs
+//         ORDER BY created_at DESC
+//         LIMIT 10
+//       `);
+//     }
 
-You help ONE user only.
+//     // =============================
+//     // 🤖 AI ANALYSIS ENGINE
+//     // =============================
+//     const response = await fetch("https://api.openai.com/v1/chat/completions", {
+//       method: "POST",
+//       headers: {
+//         Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+//         "Content-Type": "application/json",
+//       },
+//       body: JSON.stringify({
+//         model: "gpt-4o-mini",
+//         messages: [
+//           {
+//             role: "system",
+//             content: `
+// You are ADMIN AI COPILOT (NASA CONTROL ROOM SYSTEM).
 
-Rules:
-- analyze travel behavior
-- suggest next trip
-- show cheapest options
-- detect spending habits
-- be friendly and short
-              `,
-          },
-          {
-            role: "user",
-            content: `
-USER REQUEST: ${message}
+// You must:
+// - analyze system health
+// - detect anomalies
+// - summarize revenue trends
+// - detect suspicious behavior
+// - give alerts if needed
 
-USER DATA:
-${JSON.stringify(context)}
-              `,
-          },
-        ],
-      }),
-    });
+// Output style:
+// - short
+// - structured
+// - operational
+//               `,
+//           },
+//           {
+//             role: "user",
+//             content: `
+// ADMIN QUERY: ${message}
 
-    const data = await response.json();
+// SYSTEM DATA:
+// ${JSON.stringify(context)}
+//               `,
+//           },
+//         ],
+//       }),
+//     });
 
-    return res.json({
-      success: true,
-      reply: data?.choices?.[0]?.message?.content,
-    });
-  } catch (err) {
-    console.log("USER COPILOT ERROR:", err);
+//     const data = await response.json();
 
-    return res.status(500).json({
-      success: false,
-      reply: "User copilot failed",
-    });
-  }
-});
-app.post("/admin/copilot", requireAdmin, async (req: any, res) => {
-  try {
-    const { message } = req.body;
-    const text = message.toLowerCase();
+//     return res.json({
+//       success: true,
+//       reply: data?.choices?.[0]?.message?.content,
+//     });
+//   } catch (err) {
+//     console.log("COPILOT ERROR:", err);
 
-    const run = async (q: string) => (await pool.query(q)).rows;
-
-    // =============================
-    // 📡 CONTEXT BUILDER
-    // =============================
-    let context: any = {};
-
-    if (text.includes("revenue")) {
-      context.revenue = await run(`
-        SELECT DATE(created_at) as date, SUM(amount)::int as total
-        FROM payments
-        WHERE status='APPROVED'
-        GROUP BY DATE(created_at)
-        ORDER BY date DESC
-        LIMIT 7
-      `);
-    }
-
-    if (text.includes("booking")) {
-      context.bookings = await run(`
-        SELECT COUNT(*)::int as total FROM bookings
-      `);
-    }
-
-    if (text.includes("user") || text.includes("top")) {
-      context.topUsers = await run(`
-        SELECT user_id, COUNT(*)::int as total
-        FROM bookings
-        GROUP BY user_id
-        ORDER BY total DESC
-        LIMIT 5
-      `);
-    }
-
-    if (text.includes("alert") || text.includes("problem")) {
-      context.recentErrors = await run(`
-        SELECT * FROM system_logs
-        ORDER BY created_at DESC
-        LIMIT 10
-      `);
-    }
-
-    // =============================
-    // 🤖 AI ANALYSIS ENGINE
-    // =============================
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `
-You are ADMIN AI COPILOT (NASA CONTROL ROOM SYSTEM).
-
-You must:
-- analyze system health
-- detect anomalies
-- summarize revenue trends
-- detect suspicious behavior
-- give alerts if needed
-
-Output style:
-- short
-- structured
-- operational
-              `,
-          },
-          {
-            role: "user",
-            content: `
-ADMIN QUERY: ${message}
-
-SYSTEM DATA:
-${JSON.stringify(context)}
-              `,
-          },
-        ],
-      }),
-    });
-
-    const data = await response.json();
-
-    return res.json({
-      success: true,
-      reply: data?.choices?.[0]?.message?.content,
-    });
-  } catch (err) {
-    console.log("COPILOT ERROR:", err);
-
-    return res.status(500).json({
-      success: false,
-      reply: "Admin Copilot failed",
-    });
-  }
-});
-app.post("/ai/history-insight", requireAuth, async (req: any, res) => {
-  try {
-    const userId = req.user.id;
-
-    // =============================
-    // 📡 STEP 1: FETCH USER HISTORY
-    // =============================
-    const history = await pool.query(
-      `
-      SELECT 
-        'flight' as type,
-        f.from_city || ' → ' || f.to_city as title,
-        b.status,
-        b.created_at
-      FROM bookings b
-      JOIN flights f ON b.flight_id = f.id
-      WHERE b.user_id=$1
-
-      UNION ALL
-
-      SELECT 
-        'tour' as type,
-        t.name as title,
-        tb.status,
-        tb.created_at
-      FROM tour_bookings tb
-      JOIN tours t ON tb.tour_id = t.id
-      WHERE tb.user_id=$1
-
-      UNION ALL
-
-      SELECT 
-        'payment' as type,
-        amount::text || ' MMK' as title,
-        status,
-        created_at
-      FROM payments
-      WHERE user_id=$1
-      `,
-      [userId],
-    );
-
-    // =============================
-    // 🧠 STEP 2: AI INSIGHT ENGINE
-    // =============================
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `
-You are a Travel History AI Analyst.
-
-You analyze user travel history like Google Timeline.
-
-Rules:
-- summarize travel activity
-- show spending pattern
-- detect favorite destinations
-- show behavior insights
-- DO NOT hallucinate data
-- keep response short and clear
-              `,
-          },
-          {
-            role: "user",
-            content: `
-USER HISTORY DATA:
-${JSON.stringify(history.rows)}
-              `,
-          },
-        ],
-      }),
-    });
-
-    const data = await response.json();
-
-    const reply =
-      data?.choices?.[0]?.message?.content || "No insight available.";
-
-    // =============================
-    // 📤 FINAL RESPONSE
-    // =============================
-    return res.json({
-      success: true,
-      reply,
-    });
-  } catch (err) {
-    console.log("HISTORY AI ERROR:", err);
-
-    return res.status(500).json({
-      success: false,
-      reply: "AI insight failed",
-    });
-  }
-});
+//     return res.status(500).json({
+//       success: false,
+//       reply: "Admin Copilot failed",
+//     });
+//   }
+// });
 /* ================= USERS (ADMIN CONTROL) ================= */
 app.get("/admin/users", requireAdmin, async (req, res) => {
   const result = await pool.query(

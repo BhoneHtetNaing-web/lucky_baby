@@ -1,61 +1,21 @@
-import { Request, Response } from "express";
+import express, { Request, Response } from "express";
+import fetch from "node-fetch";
 import { pool } from "../db.js";
-import { saveMemory, getAllMemory } from "./memory.js";
+import { requireAuth } from "../middleware/auth.js";
 
-export const aiLearningAgent = async (req: Request, res: Response) => {
+const safeRows = async (query: string, params: any[] = []) => {
   try {
-    const { message, userId } = req.body;
-    const text = message.toLowerCase();
+    const res = await pool.query(query, params);
+    return res.rows || [];
+  } catch (err) {
+    console.log("DB ERROR:", err);
+    return [];
+  }
+};
 
-    const run = (q: string, p?: any[]) =>
-      pool.query(q, p || []).then(r => r.rows);
-
-    // =============================
-    // 🧠 STEP 1: LEARN USER INTENT
-    // =============================
-
-    if (text.includes("cheap")) {
-      await saveMemory(userId, "preference_price", "cheap");
-    }
-
-    if (text.includes("luxury")) {
-      await saveMemory(userId, "preference_price", "luxury");
-    }
-
-    if (text.includes("flight")) {
-      await saveMemory(userId, "interest", "flight");
-    }
-
-    if (text.includes("tour")) {
-      await saveMemory(userId, "interest", "tour");
-    }
-
-    // =============================
-    // 🧠 STEP 2: FETCH MEMORY
-    // =============================
-    const memory = await getAllMemory(userId);
-
-    // =============================
-    // ✈️ SMART PERSONALIZED DATA
-    // =============================
-
-    let flights = null;
-
-    const pricePref = memory.find(m => m.key === "preference_price");
-
-    if (pricePref?.value === "cheap") {
-      flights = await run(
-        "SELECT * FROM flights ORDER BY price ASC LIMIT 3"
-      );
-    } else {
-      flights = await run(
-        "SELECT * FROM flights ORDER BY price DESC LIMIT 3"
-      );
-    }
-
-    // =============================
-    // 🤖 AI RESPONSE WITH MEMORY
-    // =============================
+export const aiLearning = async (req: Request, res: Response) => {
+  try {
+    const { message } = req.body;
 
     const response = await fetch(
       "https://api.openai.com/v1/chat/completions",
@@ -70,37 +30,25 @@ export const aiLearningAgent = async (req: Request, res: Response) => {
           messages: [
             {
               role: "system",
-              content: `
-You are a SELF-LEARNING TRAVEL AI.
-
-You remember user behavior:
-
-${JSON.stringify(memory)}
-
-You have live data:
-${JSON.stringify(flights)}
-
-Rules:
-- personalize answers
-- remember preferences
-- improve suggestions over time
-              `,
+              content: "Explain clearly in simple English.",
             },
             { role: "user", content: message },
           ],
         }),
-      }
+      },
     );
 
-    const data = await response.json();
+    const data: any = await response.json();
 
-    res.json({
+    if (!response.ok) {
+      return res.status(500).json({ reply: "AI error" });
+    }
+
+    return res.json({
       reply: data?.choices?.[0]?.message?.content,
-      memory,
-      suggestions: flights,
     });
   } catch (err) {
     console.log(err);
-    res.status(500).json({ reply: "Memory AI error" });
+    res.status(500).json({ reply: "Learning failed" });
   }
 };

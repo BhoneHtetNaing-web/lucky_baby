@@ -1,108 +1,39 @@
-// ai/router.ts
-import { Request, Response } from "express";
+import express, { Request, Response } from "express";
+import fetch from "node-fetch";
 import { pool } from "../db.js";
+import { requireAuth } from "../middleware/auth.js";
+
+const safeRows = async (query: string, params: any[] = []) => {
+  try {
+    const res = await pool.query(query, params);
+    return res.rows || [];
+  } catch (err) {
+    console.log("DB ERROR:", err);
+    return [];
+  }
+};
 
 export const aiRouter = async (req: Request, res: Response) => {
   try {
     const { message } = req.body;
-    if (!message) return res.json({ reply: "Message required" });
+    const t = message.toLowerCase();
 
-    const text = message.toLowerCase();
-
-    const run = (q: string, p?: any[]) =>
-      pool.query(q, p || []).then(r => r.rows);
-
-    let context: any = {};
-
-    // =============================
-    // 🧠 INTENT ENGINE
-    // =============================
-
-    const isAdmin =
-      text.includes("revenue") ||
-      text.includes("users") ||
-      text.includes("bookings");
-
-    // ✈️ FLIGHT CONTEXT
-    if (text.includes("flight")) {
-      context.flights = await run(
-        "SELECT from_city,to_city,price FROM flights ORDER BY price ASC LIMIT 5"
-      );
+    if (t.match(/book|buy|confirm|pay|checkout/)) {
+      return res.json({ route: "/ai/agent" });
     }
 
-    // 🏝 TOUR CONTEXT
-    if (text.includes("tour")) {
-      context.tours = await run(
-        "SELECT name,price FROM tours ORDER BY price ASC LIMIT 5"
-      );
+    if (t.match(/history|timeline|insight|spending/)) {
+      return res.json({ route: "/ai/history-insight" });
     }
 
-    // =============================
-    // 👑 ADMIN CONTEXT
-    // =============================
-    if (isAdmin) {
-      context.revenue = await run(`
-        SELECT SUM(amount) as total FROM payments WHERE status='APPROVED'
-      `);
-
-      context.users = await run(`
-        SELECT COUNT(*) as total FROM users
-      `);
-
-      context.bookings = await run(`
-        SELECT COUNT(*) as total FROM bookings
-      `);
+    if (t.match(/learn|what is|how to|explain/)) {
+      return res.json({ route: "/ai/learning" });
     }
 
-    // =============================
-    // 🤖 GPT BRAIN
-    // =============================
-    const response = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content: `
-You are a Travel SaaS AI.
-
-You can:
-- flights
-- tours
-- bookings
-- admin analytics
-
-Context:
-${JSON.stringify(context)}
-
-Rules:
-- short answers
-- actionable
-- smart suggestions
-              `,
-            },
-            { role: "user", content: message },
-          ],
-        }),
-      }
-    );
-
-    const data = await response.json();
-
-    res.json({
-      reply:
-        data?.choices?.[0]?.message?.content ||
-        "I can help with travel system.",
-    });
+    return res.json({ route: "/ai/copilot" });
   } catch (err) {
     console.log(err);
-    res.status(500).json({ reply: "AI error" });
+    res.status(500).json({ route: "/ai/copilot" });
   }
 };
+
