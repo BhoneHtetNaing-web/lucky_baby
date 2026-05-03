@@ -49,31 +49,96 @@ const app = express();
 const server = http.createServer(app);
 
 /* ================= SOCKET ================= */
-const io = new Server(server, { cors: { origin: "*" } });
-const userSockets = new Map();
+export const io = new Server(server, {
+  cors: { origin: "*" },
+});
 
-const onlineUsers = new Map();
+// userId -> Set<socketId>
+const userSockets = new Map<string, Set<string>>();
 
+// =============================
+// 🔌 CONNECTION
+// =============================
 io.on("connection", (socket) => {
-  socket.on("register-user", (userId) => {
-    userSockets.set(userId, socket.id);
-    onlineUsers.set(userId, socket.id);
+  console.log("🔌 Connected:", socket.id);
 
-    io.emit("users-online", Array.from(onlineUsers.keys()));
+  // =============================
+  // 👤 REGISTER USER (MULTI DEVICE SUPPORT)
+  // =============================
+  socket.on("register-user", (userId: string) => {
+    if (!userSockets.has(userId)) {
+      userSockets.set(userId, new Set());
+    }
+
+    userSockets.get(userId)!.add(socket.id);
+
+    socket.data.userId = userId;
+
+    emitOnlineUsers();
   });
 
-  // when booking confirmed
-  const notifyUser = (userId: string, message: string) => {
-    const socketId = userSockets.get(userId);
+  // =============================
+  // 💬 CHAT SYSTEM
+  // =============================
+  socket.on("chat-send",async ({ userId, message }) => {
+    await pool.query(
+      `INSERT INTO chat_messages (user_id, role, message)
+      VALUES ($1, 'user', $2)`,
+      [userId, message]
+    );
+    // send to admin
+    io.to("admin-room").emit("chat", {
+      role: "user",
+      userId,
+      text: message,
+      time: new Date(),
+    });
 
-    if (socketId) {
-      io.to(socketId).emit("notification", {
-        type: "BOOKING_CONFIRMED",
-        message,
-        time: new Date(),
-      });
-    }
-  };
+    const aiReply = await askAI(message);
+
+    await pool.query(
+      `INSERT INTO chat_messages (user_id, role, message)
+      VALUES ($1, 'ai', $2)`,
+      [userId, aiReply]
+    );
+    // 👉 AUTO REPLY (fallback)
+    sendToUser(userId, {
+      role: "ai",
+      text: aiReply,
+    });
+  });
+
+  // admin reply
+  socket.on("admin-reply",async ({ userId, message }) => {
+    await pool.query(
+      `INSERT INTO chat_messages (user_id, role, message)
+      VALUES ($1, 'admin', $2)`,
+      [userId, message]
+    );
+
+    sendToUser(userId, {
+      role: "admin",
+      text: message,
+    });
+  });
+
+  // =============================
+  // 🔔 NOTIFICATION SYSTEM
+  // =============================
+  socket.on("notify-user", ({ userId, message }) => {
+    sendToUser(userId, {
+      type: "NOTIFICATION",
+      message,
+      time: new Date(),
+    });
+  });
+
+  // =============================
+  // 🧩 ROOMS
+  // =============================
+  socket.on("admin-join", () => {
+    socket.join("admin-room");
+  });
 
   socket.on("join-flight", (id) => {
     socket.join(`flight-${id}`);
@@ -83,35 +148,78 @@ io.on("connection", (socket) => {
     socket.join(`tour-${id}`);
   });
 
-  socket.on("admin-join", () => {
-    socket.join("admin-room");
-  });
-
-  socket.on("system-alert", (data) => {
-    io.to("admin-room").emit("alert", {
-      type: data.type,
-      message: data.message,
-      level: data.level || "info",
-      time: new Date(),
-    });
-  });
-
   socket.on("join-map", () => {
     socket.join("world-map");
   });
 
+  // =============================
+  // ❌ DISCONNECT CLEANUP
+  // =============================
   socket.on("disconnect", () => {
-    for (let [userId, id] of userSockets.entries()) {
-      if (id === socket.id) {
+    const userId = socket.data.userId;
+
+    if (userId && userSockets.has(userId)) {
+      userSockets.get(userId)!.delete(socket.id);
+
+      if (userSockets.get(userId)!.size === 0) {
         userSockets.delete(userId);
-        onlineUsers.delete(userId); // 🔥 IMPORTANT FIX
-        break;
       }
     }
 
-    io.emit("users-online", Array.from(onlineUsers.keys())); // 🔥 update
+    emitOnlineUsers();
   });
 });
+
+// =============================
+// 🤖 AI FUNCTION
+// =============================
+async function askAI(message: string) {
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: "You are travel assistant. Short reply.",
+          },
+          { role: "user", content: message },
+        ],
+      }),
+    });
+
+    const data: any = await res.json();
+
+    return data?.choices?.[0]?.message?.content || "Please wait...";
+  } catch {
+    return "Server busy. Please wait.";
+  }
+}
+
+// =============================
+// 🚀 HELPERS
+// =============================
+
+// send message to ALL devices of user
+function sendToUser(userId: string, payload: any) {
+  const sockets = userSockets.get(userId);
+
+  if (!sockets) return;
+
+  for (let socketId of sockets) {
+    io.to(socketId).emit("chat", payload);
+  }
+}
+
+// broadcast online users
+function emitOnlineUsers() {
+  io.emit("users-online", Array.from(userSockets.keys()));
+}
 
 /* ================= MIDDLEWARE ================= */
 app.use(cors({ origin: "*" }));
@@ -161,6 +269,86 @@ const requireAdmin = (req: any, res: Response, next: NextFunction) => {
     return res.status(401).json({ message: "Unauthorized" });
   }
 };
+app.post("/chat/send", requireAuth, async (req: any, res) => {
+  try {
+    const { message } = req.body;
+    const userId = req.user.id;
+
+    // 💾 SAVE USER MESSAGE
+    await pool.query(
+      `INSERT INTO chat_messages (user_id, role, text)
+       VALUES ($1, 'user', $2)`,
+      [userId, message]
+    );
+
+    // 🤖 AUTO REPLY (instant)
+    const autoReply = `
+🙏 Hello! Thanks for contacting us.
+
+Our team will respond shortly.
+Please wait a moment...
+`;
+
+    await pool.query(
+      `INSERT INTO chat_messages (user_id, role, text)
+       VALUES ($1, 'admin', $2)`,
+      [userId, autoReply]
+    );
+
+    // 🔴 REALTIME SEND TO USER
+    io.to(`user-${userId}`).emit("chat", {
+      role: "admin",
+      text: autoReply,
+    });
+
+    // 🔴 NOTIFY ADMIN
+    io.to("admin-room").emit("new-message", {
+      userId,
+      message,
+    });
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Chat failed" });
+  }
+});
+app.get("/admin/messages", async (req, res) => {
+  const result = await pool.query(`
+    SELECT DISTINCT user_id
+    FROM chat_messages
+    ORDER BY user_id DESC
+  `);
+
+  res.json(result.rows);
+});
+app.get("/admin/chat/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  const result = await pool.query(
+    `SELECT * FROM chat_messages WHERE user_id=$1 ORDER BY created_at ASC`,
+    [userId]
+  );
+
+  res.json(result.rows);
+});
+app.post("/admin/reply", async (req, res) => {
+  const { userId, text } = req.body;
+
+  await pool.query(
+    `INSERT INTO chat_messages (user_id, role, text)
+     VALUES ($1, 'admin', $2)`,
+    [userId, text]
+  );
+
+  io.to(`user-${userId}`).emit("chat", {
+    role: "admin",
+    text,
+  });
+
+  res.json({ success: true });
+});
 app.post("/ai/agent", requireAuth, aiAgent);
 app.post("/ai/learning", aiLearning);
 app.post("/ai/copilot", requireAuth, async (req: any, res: Response) => {
